@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Transcriber</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['DM Sans', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            colors: {
+              brand: {
+                50:  '#f0f4ff',
+                100: '#dbe4ff',
+                200: '#bac8ff',
+                300: '#91a7ff',
+                400: '#748ffc',
+                500: '#5c7cfa',
+                600: '#4c6ef5',
+                700: '#4263eb',
+                800: '#3b5bdb',
+                900: '#364fc7',
+              },
+              surface: {
+                50:  '#f8fafc',
+                100: '#f1f5f9',
+                200: '#e2e8f0',
+                300: '#cbd5e1',
+              }
+            },
+            animation: {
+              'fade-in':    'fadeIn 0.3s ease-out',
+              'slide-up':   'slideUp 0.4s ease-out',
+              'pulse-slow': 'pulse 3s cubic-bezier(0.4,0,0.6,1) infinite',
+            },
+            keyframes: {
+              fadeIn:  { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+              slideUp: { '0%': { transform: 'translateY(10px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      html { scroll-behavior: smooth; }
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+      .transcript-body { color: #374151; line-height: 1.85; font-size: 0.925rem; }
+      .transcript-body p  { margin-bottom: 0.4em; }
+      .transcript-body pre { background: #1e293b; color: #f8fafc; padding: 1em; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85em; white-space: pre-wrap; word-break: break-word; }
+    </style>
+  </head>
+  <body class="bg-surface-50 text-slate-900 antialiased min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
