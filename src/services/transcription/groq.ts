@@ -114,15 +114,18 @@ export async function transcribeWithGroq(
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'segment');
 
-  // Participant names as prompt hint — helps Whisper spell names correctly
+  // Pass names as a bare word list — NOT a full sentence like "Participants: X, Y."
+  // Whisper hallucinates by repeating the prompt verbatim during silence when the
+  // prompt looks like speech. Bare names are treated as vocabulary, not as spoken words.
   const names = [
     context?.hostName ?? '',
     ...(context?.participants ?? []),
   ].filter(Boolean);
   if (names.length > 0) {
+    // Brief title prefix helps domain context; names alone fix spelling
     const hint = context?.meetingTitle
-      ? `${context.meetingTitle}. Participants: ${names.join(', ')}.`
-      : `Meeting participants: ${names.join(', ')}.`;
+      ? `${context.meetingTitle}: ${names.join(', ')}`
+      : names.join(', ');
     form.append('prompt', hint);
   }
 
@@ -143,13 +146,25 @@ export async function transcribeWithGroq(
   const data = await res.json();
 
   if (data.segments?.length > 0) {
-    return data.segments.map((seg: any) => {
-      const h  = Math.floor(seg.start / 3600);
-      const m  = Math.floor((seg.start % 3600) / 60);
-      const s  = Math.floor(seg.start % 60);
-      const ts = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-      return `[${ts}] ${seg.text.trim()}`;
-    }).join('\n');
+    // Build a regex that matches Whisper hallucinations of the participant names prompt.
+    // Whisper sometimes echoes the prompt text verbatim as a standalone segment during
+    // silence — strip those lines so they don't pollute the transcript.
+    const namePattern = names.length > 0
+      ? new RegExp(`^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*(participants?[,:]?\\s*)?${
+          names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[,\\s]+')
+        }[.,]?\\s*$`, 'i')
+      : null;
+
+    return data.segments
+      .map((seg: any) => {
+        const h  = Math.floor(seg.start / 3600);
+        const m  = Math.floor((seg.start % 3600) / 60);
+        const s  = Math.floor(seg.start % 60);
+        const ts = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        return `[${ts}] ${seg.text.trim()}`;
+      })
+      .filter((line: string) => !namePattern || !namePattern.test(line))
+      .join('\n');
   }
 
   return data.text ?? '';

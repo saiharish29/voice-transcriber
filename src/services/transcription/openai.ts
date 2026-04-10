@@ -212,15 +212,16 @@ async function transcribeWithWhisper(
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'segment');
 
-  // Names as prompt hint so Whisper transcribes them correctly
+  // Pass names as bare words, not a sentence — avoids Whisper echoing the prompt
+  // during silence (a known hallucination pattern with speech-like prompts).
   const names = [
     context?.hostName ?? '',
     ...(context?.participants ?? []),
   ].filter(Boolean);
   if (names.length > 0) {
     const hint = context?.meetingTitle
-      ? `${context.meetingTitle}. Participants: ${names.join(', ')}.`
-      : `Meeting participants: ${names.join(', ')}.`;
+      ? `${context.meetingTitle}: ${names.join(', ')}`
+      : names.join(', ');
     form.append('prompt', hint);
   }
 
@@ -240,15 +241,24 @@ async function transcribeWithWhisper(
 
   const data = await res.json();
 
-  // Format verbose_json segments into timestamped lines
+  // Format verbose_json segments, stripping any hallucinated name-list lines
   if (data.segments?.length > 0) {
-    return data.segments.map((seg: any) => {
-      const h  = Math.floor(seg.start / 3600);
-      const m  = Math.floor((seg.start % 3600) / 60);
-      const s  = Math.floor(seg.start % 60);
-      const ts = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-      return `[${ts}] ${seg.text.trim()}`;
-    }).join('\n');
+    const namePattern = names.length > 0
+      ? new RegExp(`^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*(participants?[,:]?\\s*)?${
+          names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[,\\s]+')
+        }[.,]?\\s*$`, 'i')
+      : null;
+
+    return data.segments
+      .map((seg: any) => {
+        const h  = Math.floor(seg.start / 3600);
+        const m  = Math.floor((seg.start % 3600) / 60);
+        const s  = Math.floor(seg.start % 60);
+        const ts = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        return `[${ts}] ${seg.text.trim()}`;
+      })
+      .filter((line: string) => !namePattern || !namePattern.test(line))
+      .join('\n');
   }
 
   return data.text ?? '';
