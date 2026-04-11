@@ -1,0 +1,1677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Voice Transcriber — Troubleshooting & Deployment Guide</title>
+<style>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --indigo:   #4F46E5;
+    --indigo-d: #3730A3;
+    --indigo-l: #EEF2FF;
+    --green:    #10B981;
+    --green-l:  #ECFDF5;
+    --amber:    #F59E0B;
+    --amber-l:  #FFFBEB;
+    --red:      #EF4444;
+    --red-l:    #FEF2F2;
+    --blue:     #3B82F6;
+    --blue-l:   #EFF6FF;
+    --purple:   #8B5CF6;
+    --purple-l: #F5F3FF;
+    --slate-50:  #F8FAFC;
+    --slate-100: #F1F5F9;
+    --slate-200: #E2E8F0;
+    --slate-300: #CBD5E1;
+    --slate-400: #94A3B8;
+    --slate-500: #64748B;
+    --slate-600: #475569;
+    --slate-700: #334155;
+    --slate-800: #1E293B;
+    --slate-900: #0F172A;
+    --radius:   10px;
+    --shadow:   0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+    --shadow-md:0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+    --shadow-lg:0 10px 15px rgba(0,0,0,.1), 0 4px 6px rgba(0,0,0,.05);
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--slate-50);
+    color: var(--slate-800);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  .site-header {
+    background: linear-gradient(135deg, var(--indigo-d) 0%, var(--indigo) 60%, #6366F1 100%);
+    color: #fff;
+    padding: 2.5rem 1.5rem 3rem;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .site-header::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.04'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+    pointer-events: none;
+  }
+  .header-inner {
+    position: relative;
+    max-width: 900px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+  }
+  .logo-wrap {
+    background: rgba(255,255,255,.15);
+    border-radius: 50%;
+    width: 64px; height: 64px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 6px rgba(255,255,255,.08);
+  }
+  .header-text h1 {
+    font-size: clamp(1.5rem, 4vw, 2.2rem);
+    font-weight: 800;
+    letter-spacing: -.5px;
+  }
+  .header-text p {
+    font-size: .95rem;
+    opacity: .85;
+    margin-top: .25rem;
+  }
+  .badge-row {
+    display: flex; gap: .5rem; flex-wrap: wrap; justify-content: center;
+    margin-top: 1.25rem;
+    position: relative;
+  }
+  .hdr-badge {
+    background: rgba(255,255,255,.18);
+    border: 1px solid rgba(255,255,255,.25);
+    border-radius: 999px;
+    padding: .3rem .85rem;
+    font-size: .78rem;
+    font-weight: 600;
+    color: #fff;
+    letter-spacing: .3px;
+  }
+
+  /* ── Sticky nav ── */
+  .sticky-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: #fff;
+    border-bottom: 2px solid var(--slate-200);
+    box-shadow: var(--shadow);
+  }
+  .nav-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    padding: 0 1rem;
+    gap: .25rem;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    background: none;
+    border: none;
+    padding: 1rem 1.25rem;
+    font-size: .9rem;
+    font-weight: 600;
+    color: var(--slate-500);
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: color .2s, border-color .2s;
+    white-space: nowrap;
+  }
+  .nav-tab:hover { color: var(--indigo); }
+  .nav-tab.active { color: var(--indigo); border-bottom-color: var(--indigo); }
+
+  /* ── Main layout ── */
+  .main { max-width: 1100px; margin: 0 auto; padding: 2rem 1rem 4rem; }
+
+  .section-pane { display: none; }
+  .section-pane.active { display: block; }
+
+  /* ── Section heading ── */
+  .section-title {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--slate-900);
+    margin-bottom: .4rem;
+  }
+  .section-subtitle {
+    color: var(--slate-500);
+    font-size: .95rem;
+    margin-bottom: 2rem;
+  }
+
+  /* ────────────────────────────────
+     ARCHITECTURE INFOGRAPHIC
+  ──────────────────────────────── */
+  .infographic-wrap {
+    background: #fff;
+    border: 1px solid var(--slate-200);
+    border-radius: var(--radius);
+    padding: 1.5rem 1rem;
+    margin-bottom: 2.5rem;
+    box-shadow: var(--shadow-md);
+    overflow-x: auto;
+  }
+  .infographic-wrap h2 {
+    text-align: center;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--slate-600);
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    margin-bottom: 1.25rem;
+  }
+  .infographic-wrap svg {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* ────────────────────────────────
+     SUMMARY BAR
+  ──────────────────────────────── */
+  .summary-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 2rem;
+    align-items: center;
+  }
+  .summary-stat {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    background: #fff;
+    border: 1px solid var(--slate-200);
+    border-radius: var(--radius);
+    padding: .75rem 1.25rem;
+    box-shadow: var(--shadow);
+    flex: 1 1 180px;
+  }
+  .summary-stat .icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .summary-stat .icon.red    { background: var(--red-l);    color: var(--red); }
+  .summary-stat .icon.green  { background: var(--green-l);  color: var(--green); }
+  .summary-stat .icon.amber  { background: var(--amber-l);  color: var(--amber); }
+  .summary-stat .icon.indigo { background: var(--indigo-l); color: var(--indigo); }
+  .summary-stat .label { font-size: .75rem; color: var(--slate-500); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+  .summary-stat .value { font-size: 1.3rem; font-weight: 800; color: var(--slate-900); line-height: 1.2; }
+
+  /* ── Filter bar ── */
+  .filter-bar {
+    display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1.5rem; align-items: center;
+  }
+  .filter-btn {
+    background: #fff;
+    border: 1.5px solid var(--slate-200);
+    border-radius: 999px;
+    padding: .35rem .9rem;
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--slate-600);
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .filter-btn:hover { border-color: var(--indigo); color: var(--indigo); }
+  .filter-btn.active { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+
+  /* ────────────────────────────────
+     ISSUE CARDS
+  ──────────────────────────────── */
+  .issue-card {
+    background: #fff;
+    border: 1.5px solid var(--slate-200);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    transition: box-shadow .2s;
+  }
+  .issue-card:hover { box-shadow: var(--shadow-md); }
+  .issue-card.open  { border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(79,70,229,.1), var(--shadow-md); }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background .15s;
+  }
+  .card-header:hover { background: var(--slate-50); }
+
+  .issue-num {
+    flex-shrink: 0;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--indigo-l);
+    color: var(--indigo);
+    font-size: .82rem;
+    font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .card-meta { flex: 1; min-width: 0; }
+  .card-title {
+    font-weight: 700;
+    font-size: .97rem;
+    color: var(--slate-900);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .card-sub { font-size: .8rem; color: var(--slate-500); margin-top: .1rem; }
+
+  .card-badges { display: flex; gap: .4rem; flex-shrink: 0; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+
+  .badge {
+    display: inline-block;
+    padding: .2rem .6rem;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .4px;
+    text-transform: uppercase;
+  }
+  .badge-bug        { background: var(--red-l);    color: var(--red); }
+  .badge-config     { background: var(--amber-l);  color: #92400E; }
+  .badge-test       { background: var(--blue-l);   color: #1D4ED8; }
+  .badge-deployment { background: var(--purple-l); color: #6D28D9; }
+  .badge-fixed      { background: var(--green-l);  color: #065F46; }
+  .badge-status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); flex-shrink: 0;
+  }
+
+  .card-chevron {
+    flex-shrink: 0;
+    color: var(--slate-400);
+    transition: transform .25s;
+  }
+  .issue-card.open .card-chevron { transform: rotate(180deg); }
+
+  /* Card body */
+  .card-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height .35s ease;
+  }
+  .issue-card.open .card-body { max-height: 2000px; }
+  .card-body-inner {
+    padding: 0 1.25rem 1.25rem;
+    border-top: 1px solid var(--slate-100);
+  }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+  }
+  .detail-box {
+    background: var(--slate-50);
+    border: 1px solid var(--slate-200);
+    border-radius: 8px;
+    padding: .85rem 1rem;
+  }
+  .detail-box .dl { font-size: .72rem; font-weight: 700; color: var(--slate-500); text-transform: uppercase; letter-spacing: .5px; margin-bottom: .3rem; }
+  .detail-box .dv { font-size: .88rem; color: var(--slate-800); line-height: 1.5; }
+  .detail-box .dv.symptom { color: var(--red); font-weight: 600; }
+  .detail-box .dv.cause   { color: #92400E; }
+  .detail-box .dv.fix     { color: #065F46; }
+
+  .code-block-wrap { margin-top: .85rem; }
+  .code-block-label {
+    font-size: .72rem;
+    font-weight: 700;
+    color: var(--slate-500);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: .35rem;
+    display: flex; align-items: center; gap: .4rem;
+  }
+  .code-block-label .file-pill {
+    background: var(--slate-200);
+    border-radius: 4px;
+    padding: .1rem .45rem;
+    font-size: .7rem;
+    color: var(--slate-600);
+    font-family: 'SF Mono', Consolas, monospace;
+    font-weight: 600;
+    text-transform: none;
+  }
+  pre.code {
+    background: var(--slate-900);
+    color: #E2E8F0;
+    border-radius: 8px;
+    padding: .85rem 1rem;
+    font-size: .8rem;
+    font-family: 'SF Mono', Consolas, 'Cascadia Code', 'Fira Code', monospace;
+    overflow-x: auto;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  pre.code .hl-key   { color: #93C5FD; }
+  pre.code .hl-str   { color: #86EFAC; }
+  pre.code .hl-cmt   { color: #64748B; font-style: italic; }
+  pre.code .hl-fn    { color: #FCA5A5; }
+  pre.code .hl-num   { color: #FDE68A; }
+
+  .note-box {
+    background: var(--amber-l);
+    border: 1px solid #FDE68A;
+    border-radius: 8px;
+    padding: .75rem 1rem;
+    font-size: .85rem;
+    color: #78350F;
+    margin-top: .85rem;
+    display: flex; gap: .5rem; align-items: flex-start;
+  }
+  .note-box .note-icon { flex-shrink: 0; margin-top: .1rem; }
+
+  /* ────────────────────────────────
+     DEPLOYMENT GUIDE
+  ──────────────────────────────── */
+  .deploy-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.25rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .deploy-step {
+    background: #fff;
+    border: 1.5px solid var(--slate-200);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    box-shadow: var(--shadow);
+    display: flex;
+    gap: 1rem;
+    transition: box-shadow .2s, border-color .2s;
+  }
+  .deploy-step:hover { box-shadow: var(--shadow-md); border-color: var(--indigo); }
+
+  .step-num-wrap {
+    flex-shrink: 0;
+    display: flex; flex-direction: column; align-items: center; gap: .35rem;
+  }
+  .step-checkbox {
+    width: 22px; height: 22px;
+    border: 2px solid var(--slate-300);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    transition: all .2s;
+    flex-shrink: 0;
+  }
+  .step-checkbox:hover { border-color: var(--green); background: var(--green-l); }
+  .step-checkbox.checked { border-color: var(--green); background: var(--green); }
+  .step-num {
+    font-size: .72rem;
+    font-weight: 800;
+    color: var(--slate-400);
+    line-height: 1;
+  }
+
+  .step-body { flex: 1; min-width: 0; }
+  .step-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--slate-900);
+    margin-bottom: .4rem;
+  }
+  .step-desc {
+    font-size: .87rem;
+    color: var(--slate-600);
+    line-height: 1.6;
+    margin-bottom: .6rem;
+  }
+  .step-cmds {
+    display: flex; flex-direction: column; gap: .3rem;
+  }
+  .cmd {
+    background: var(--slate-900);
+    color: #E2E8F0;
+    border-radius: 6px;
+    padding: .45rem .75rem;
+    font-size: .78rem;
+    font-family: 'SF Mono', Consolas, monospace;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .cmd .prompt { color: #64748B; margin-right: .4rem; }
+
+  .step-kv-list { display: flex; flex-direction: column; gap: .3rem; margin-top: .5rem; }
+  .step-kv { display: flex; gap: .5rem; font-size: .84rem; }
+  .step-kv .k { color: var(--slate-500); font-weight: 600; min-width: 120px; flex-shrink: 0; }
+  .step-kv .v { color: var(--slate-800); font-family: 'SF Mono', Consolas, monospace; font-size: .8rem; background: var(--slate-100); padding: .1rem .4rem; border-radius: 4px; }
+
+  /* ────────────────────────────────
+     FOOTER
+  ──────────────────────────────── */
+  footer {
+    background: var(--slate-900);
+    color: var(--slate-400);
+    text-align: center;
+    padding: 2rem 1rem;
+    font-size: .82rem;
+    margin-top: 3rem;
+  }
+  footer a { color: var(--indigo); text-decoration: none; }
+  footer strong { color: var(--slate-200); }
+  .footer-meta { display: flex; gap: 1.5rem; justify-content: center; flex-wrap: wrap; margin-top: .75rem; }
+  .footer-chip {
+    background: var(--slate-800);
+    border: 1px solid var(--slate-700);
+    border-radius: 6px;
+    padding: .25rem .7rem;
+    display: flex; align-items: center; gap: .4rem;
+    font-size: .78rem;
+  }
+  .footer-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+
+  /* ── Utilities ── */
+  .text-center { text-align: center; }
+  .mt-1 { margin-top: .5rem; }
+  .mt-2 { margin-top: 1rem; }
+  .mb-1 { margin-bottom: .5rem; }
+
+  /* ────────────────────────────────
+     PRINT
+  ──────────────────────────────── */
+  @media print {
+    .sticky-nav { display: none; }
+    .section-pane { display: block !important; }
+    .card-body { max-height: none !important; overflow: visible; }
+    .site-header { background: #333 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .issue-card { break-inside: avoid; }
+    .deploy-step { break-inside: avoid; }
+    body { background: #fff; }
+  }
+
+  /* ────────────────────────────────
+     RESPONSIVE
+  ──────────────────────────────── */
+  @media (max-width: 640px) {
+    .site-header { padding: 1.75rem 1rem 2.25rem; }
+    .header-inner { flex-direction: column; gap: .75rem; }
+    .card-badges .badge { display: none; }
+    .card-badges .badge-status-dot { display: block; }
+    .detail-grid { grid-template-columns: 1fr; }
+    .deploy-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════ -->
+<header class="site-header">
+  <div class="header-inner">
+    <div class="logo-wrap">
+      <!-- Microphone SVG icon -->
+      <svg width="34" height="34" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="11" y="2" width="12" height="18" rx="6" fill="white" fill-opacity="0.95"/>
+        <path d="M5 17a12 12 0 0 0 24 0" stroke="white" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <line x1="17" y1="29" x2="17" y2="33" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="11" y1="33" x2="23" y2="33" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="header-text">
+      <h1>Voice Transcriber</h1>
+      <p>Troubleshooting Guide &amp; Deployment Reference</p>
+    </div>
+  </div>
+  <div class="badge-row">
+    <span class="hdr-badge">10 Issues Resolved</span>
+    <span class="hdr-badge">165 Tests Passing</span>
+    <span class="hdr-badge">BYOK — API Keys Stay Local</span>
+    <span class="hdr-badge">Deployed on Render</span>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════
+     STICKY NAV
+══════════════════════════════════════════ -->
+<nav class="sticky-nav" role="navigation" aria-label="Main navigation">
+  <div class="nav-inner">
+    <button class="nav-tab active" data-tab="architecture" onclick="switchTab('architecture')">
+      Architecture
+    </button>
+    <button class="nav-tab" data-tab="issues" onclick="switchTab('issues')">
+      Issue Tracker (10)
+    </button>
+    <button class="nav-tab" data-tab="deployment" onclick="switchTab('deployment')">
+      Deployment Guide
+    </button>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════
+     MAIN CONTENT
+══════════════════════════════════════════ -->
+<main class="main">
+
+  <!-- ┌───────────────────────────────────────
+       TAB: ARCHITECTURE
+  ─────────────────────────────────────────── -->
+  <section id="tab-architecture" class="section-pane active">
+    <h2 class="section-title">System Architecture</h2>
+    <p class="section-subtitle">How Voice Transcriber works end-to-end — the BYOK security model and the Render deployment pipeline.</p>
+
+    <!-- ── BYOK Architecture Infographic ── -->
+    <div class="infographic-wrap">
+      <h2>BYOK Data Flow &amp; Transcription Pipeline</h2>
+      <svg viewBox="0 0 820 320" width="820" height="320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="BYOK architecture diagram">
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
+          </marker>
+          <marker id="arr-grn" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#10B981"/>
+          </marker>
+          <marker id="arr-ind" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#4F46E5"/>
+          </marker>
+          <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+            <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="rgba(0,0,0,0.12)"/>
+          </filter>
+        </defs>
+
+        <!-- Background -->
+        <rect width="820" height="320" rx="12" fill="#F8FAFC"/>
+
+        <!-- ── SECTION 1: User/Browser area ── -->
+        <rect x="14" y="14" width="230" height="292" rx="10" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1.5"/>
+        <text x="129" y="36" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#4338CA" letter-spacing="0.5">USER BROWSER</text>
+
+        <!-- Audio Upload box -->
+        <rect x="30" y="48" width="198" height="64" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="30" y="48" width="6" height="64" rx="3" fill="#4F46E5"/>
+        <!-- Mic icon small -->
+        <rect x="46" y="65" width="12" height="16" rx="6" fill="#4F46E5"/>
+        <path d="M39 76 a11 11 0 0 0 22 0" stroke="#4F46E5" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <text x="70" y="71" font-family="system-ui" font-size="11" font-weight="700" fill="#1E293B">Audio Upload</text>
+        <text x="70" y="85" font-family="system-ui" font-size="9.5" fill="#64748B">WAV / MP3 / M4A file</text>
+        <text x="70" y="98" font-family="system-ui" font-size="9.5" fill="#64748B">Processed in browser</text>
+
+        <!-- LocalStorage box -->
+        <rect x="30" y="126" width="198" height="68" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="30" y="126" width="6" height="68" rx="3" fill="#F59E0B"/>
+        <!-- Key icon -->
+        <circle cx="48" cy="153" r="7" fill="none" stroke="#F59E0B" stroke-width="2"/>
+        <rect x="53" y="151" width="12" height="4" rx="2" fill="#F59E0B"/>
+        <rect x="61" y="155" width="4" height="4" rx="1" fill="#F59E0B"/>
+        <text x="70" y="149" font-family="system-ui" font-size="11" font-weight="700" fill="#1E293B">localStorage</text>
+        <text x="70" y="163" font-family="system-ui" font-size="9.5" fill="#64748B">API Key stored ONLY</text>
+        <text x="70" y="176" font-family="system-ui" font-size="9.5" fill="#64748B">in your browser</text>
+        <rect x="30" y="198" width="198" height="24" rx="5" fill="#FFFBEB" stroke="#FDE68A" stroke-width="1"/>
+        <text x="129" y="215" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="700" fill="#92400E">&#x26A0;&#xFE0F; KEY NEVER SENT TO SERVER</text>
+
+        <!-- Provider selector -->
+        <rect x="30" y="232" width="198" height="58" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="30" y="232" width="6" height="58" rx="3" fill="#8B5CF6"/>
+        <text x="70" y="249" font-family="system-ui" font-size="11" font-weight="700" fill="#1E293B">Provider Selector</text>
+        <rect x="48" y="258" width="40" height="16" rx="4" fill="#DBEAFE"/>
+        <text x="68" y="270" text-anchor="middle" font-family="system-ui" font-size="8" font-weight="700" fill="#1D4ED8">Gemini</text>
+        <rect x="93" y="258" width="40" height="16" rx="4" fill="#F0FDF4"/>
+        <text x="113" y="270" text-anchor="middle" font-family="system-ui" font-size="8" font-weight="700" fill="#15803D">OpenAI</text>
+        <rect x="138" y="258" width="36" height="16" rx="4" fill="#FFF7ED"/>
+        <text x="156" y="270" text-anchor="middle" font-family="system-ui" font-size="8" font-weight="700" fill="#C2410C">Groq</text>
+
+        <!-- ── ARROWS from browser to providers ── -->
+        <!-- Arrow to Gemini -->
+        <path d="M244 75 L310 75" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr)" fill="none" stroke-dasharray="4,3"/>
+
+        <!-- Arrow to OpenAI -->
+        <path d="M244 160 L280 160 L280 185 L310 185" stroke="#10B981" stroke-width="1.5" marker-end="url(#arr-grn)" fill="none"/>
+        <!-- Label on arrow -->
+        <rect x="246" y="148" width="72" height="16" rx="3" fill="#ECFDF5"/>
+        <text x="282" y="160" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="600" fill="#065F46">API key + audio</text>
+
+        <!-- Arrow to Groq -->
+        <path d="M244 260 L280 260 L280 295 L310 295" stroke="#EF4444" stroke-width="1.5" marker-end="url(#arr)" fill="none"/>
+
+        <!-- ── SECTION 2: LLM Providers ── -->
+        <rect x="310" y="14" width="210" height="292" rx="10" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1.5"/>
+        <text x="415" y="36" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#15803D" letter-spacing="0.5">LLM PROVIDERS</text>
+
+        <!-- Gemini -->
+        <rect x="326" y="48" width="178" height="60" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="326" y="48" width="6" height="60" rx="3" fill="#4285F4"/>
+        <circle cx="352" cy="66" r="8" fill="#4285F4"/>
+        <text x="352" y="70" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="700" fill="white">G</text>
+        <text x="370" y="64" font-family="system-ui" font-size="11" font-weight="700" fill="#1E293B">Google Gemini</text>
+        <text x="370" y="78" font-family="system-ui" font-size="9.5" fill="#64748B">gemini-2.0-flash</text>
+        <text x="370" y="91" font-family="system-ui" font-size="9.5" fill="#64748B">Speaker diarization ✓</text>
+
+        <!-- OpenAI -->
+        <rect x="326" y="155" width="178" height="60" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="326" y="155" width="6" height="60" rx="3" fill="#10A37F"/>
+        <circle cx="352" cy="173" r="8" fill="#10A37F"/>
+        <text x="352" y="177" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="700" fill="white">O</text>
+        <text x="370" y="171" font-family="system-ui" font-size="11" font-weight="700" fill="#1E293B">OpenAI</text>
+        <text x="370" y="185" font-family="system-ui" font-size="9.5" fill="#64748B">Whisper / GPT-4</text>
+        <text x="370" y="198" font-family="system-ui" font-size="9.5" fill="#64748B">Vocab hints ✓</text>
+
+        <!-- Groq -->
+        <rect x="326" y="265" width="178" height="28" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="326" y="265" width="6" height="28" rx="3" fill="#EF4444"/>
+        <circle cx="352" cy="279" r="8" fill="#EF4444"/>
+        <text x="352" y="283" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="700" fill="white">Gr</text>
+        <text x="370" y="275" font-family="system-ui" font-size="11" font-weight="700" fill="#1E293B">Groq</text>
+        <text x="370" y="288" font-family="system-ui" font-size="9.5" fill="#64748B">Whisper (fast)</text>
+
+        <!-- Transcript return arrow -->
+        <path d="M415 110 L415 140" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr)" fill="none" stroke-dasharray="3,3"/>
+        <rect x="392" y="117" width="48" height="16" rx="3" fill="#F1F5F9"/>
+        <text x="416" y="129" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#64748B">transcript</text>
+
+        <!-- Return arrow from providers to browser -->
+        <path d="M310 100 L260 100 L260 80 L244 80" stroke="#4F46E5" stroke-width="1.5" marker-end="url(#arr-ind)" fill="none" stroke-dasharray="5,3"/>
+        <rect x="253" y="100" width="58" height="16" rx="3" fill="#EEF2FF"/>
+        <text x="282" y="112" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#4338CA">response JSON</text>
+
+        <!-- ── SECTION 3: Render Pipeline ── -->
+        <rect x="542" y="14" width="264" height="292" rx="10" fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+        <text x="674" y="36" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#C2410C" letter-spacing="0.5">RENDER DEPLOY PIPELINE</text>
+
+        <!-- Local Dev -->
+        <rect x="558" y="48" width="108" height="48" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="558" y="48" width="6" height="48" rx="3" fill="#475569"/>
+        <text x="616" y="67" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="700" fill="#1E293B">Local Dev</text>
+        <text x="616" y="81" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#64748B">npm run dev</text>
+
+        <!-- Arrow: Local → GitHub -->
+        <path d="M614 96 L614 120" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr)" fill="none"/>
+        <rect x="572" y="102" width="82" height="14" rx="3" fill="#F1F5F9"/>
+        <text x="613" y="113" text-anchor="middle" font-family="system-ui" font-size="8" fill="#64748B">git push origin main</text>
+
+        <!-- GitHub -->
+        <rect x="558" y="122" width="108" height="48" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="558" y="122" width="6" height="48" rx="3" fill="#24292E"/>
+        <text x="616" y="142" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="700" fill="#1E293B">GitHub</text>
+        <text x="616" y="156" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#64748B">saiharish29/repo</text>
+
+        <!-- Arrow: GitHub → Render -->
+        <path d="M614 170 L614 194" stroke="#10B981" stroke-width="2" marker-end="url(#arr-grn)" fill="none"/>
+        <rect x="572" y="176" width="82" height="14" rx="3" fill="#ECFDF5"/>
+        <text x="613" y="187" text-anchor="middle" font-family="system-ui" font-size="8" font-weight="600" fill="#065F46">auto-deploy trigger</text>
+
+        <!-- Render Build -->
+        <rect x="558" y="196" width="108" height="62" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadow)"/>
+        <rect x="558" y="196" width="6" height="62" rx="3" fill="#46B3E6"/>
+        <text x="616" y="216" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="700" fill="#1E293B">Render</text>
+        <text x="616" y="230" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#64748B">npm install &amp;&amp;</text>
+        <text x="616" y="242" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#64748B">npm run build</text>
+        <text x="616" y="254" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#64748B">→ dist/</text>
+
+        <!-- Arrow: Render → Live -->
+        <path d="M614 258 L614 278" stroke="#10B981" stroke-width="2" marker-end="url(#arr-grn)" fill="none"/>
+
+        <!-- Live Site -->
+        <rect x="558" y="278" width="232" height="24" rx="8" fill="#ECFDF5" stroke="#86EFAC" stroke-width="1.5"/>
+        <circle cx="576" cy="290" r="5" fill="#10B981"/>
+        <text x="676" y="294" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="700" fill="#065F46">&#x1F680; Live on Render CDN</text>
+
+        <!-- Security note -->
+        <rect x="674" y="66" width="124" height="110" rx="8" fill="#FEF3C7" stroke="#FDE68A" stroke-width="1.5"/>
+        <text x="736" y="84" text-anchor="middle" font-family="system-ui" font-size="9.5" font-weight="700" fill="#92400E">BYOK SECURITY</text>
+        <text x="736" y="98" text-anchor="middle" font-family="system-ui" font-size="9" fill="#78350F">Keys live in your</text>
+        <text x="736" y="111" text-anchor="middle" font-family="system-ui" font-size="9" fill="#78350F">localStorage ONLY</text>
+        <path d="M694 120 L778 120" stroke="#FDE68A" stroke-width="1"/>
+        <text x="736" y="134" text-anchor="middle" font-family="system-ui" font-size="9" fill="#78350F">No backend server</text>
+        <text x="736" y="147" text-anchor="middle" font-family="system-ui" font-size="9" fill="#78350F">No database</text>
+        <text x="736" y="160" text-anchor="middle" font-family="system-ui" font-size="9" fill="#78350F">No key logging</text>
+
+        <!-- Lock icon in security box -->
+        <rect x="724" y="165" width="24" height="20" rx="3" fill="#92400E"/>
+        <path d="M730 165 L730 161 a6 6 0 0 1 12 0 L742 165" stroke="#92400E" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+        <circle cx="736" cy="176" r="3" fill="white"/>
+      </svg>
+    </div>
+
+    <!-- ── Render Pipeline Detail Infographic ── -->
+    <div class="infographic-wrap">
+      <h2>Windows → Render Build Fix (Execute-Bit Issue)</h2>
+      <svg viewBox="0 0 780 140" width="780" height="140" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
+          </marker>
+          <marker id="arr2-red" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#EF4444"/>
+          </marker>
+          <marker id="arr2-grn" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#10B981"/>
+          </marker>
+        </defs>
+        <rect width="780" height="140" rx="12" fill="#F8FAFC"/>
+
+        <!-- Windows Dev -->
+        <rect x="12" y="30" width="130" height="80" rx="8" fill="white" stroke="#CBD5E1" stroke-width="1.5"/>
+        <rect x="12" y="30" width="130" height="26" rx="8" fill="#0078D4"/>
+        <rect x="12" y="44" width="130" height="12" rx="0" fill="#0078D4"/>
+        <text x="77" y="48" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="700" fill="white">Windows Git</text>
+        <text x="77" y="68" text-anchor="middle" font-family="system-ui" font-size="9" fill="#475569">"vite build"</text>
+        <text x="77" y="82" text-anchor="middle" font-family="system-ui" font-size="9" fill="#475569">works locally ✓</text>
+        <text x="77" y="96" text-anchor="middle" font-family="system-ui" font-size="8.5" fill="#94A3B8">+x bit NOT saved</text>
+
+        <!-- Arrow with problem -->
+        <path d="M144 70 L220 70" stroke="#EF4444" stroke-width="2" marker-end="url(#arr2-red)"/>
+        <rect x="150" y="52" width="64" height="14" rx="3" fill="#FEF2F2"/>
+        <text x="182" y="62" text-anchor="middle" font-family="system-ui" font-size="8.5" font-weight="600" fill="#EF4444">git push</text>
+        <text x="182" y="78" text-anchor="middle" font-family="system-ui" font-size="8" fill="#EF4444">no exec bit</text>
+
+        <!-- Render Linux (problem) -->
+        <rect x="222" y="30" width="150" height="80" rx="8" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5"/>
+        <text x="297" y="52" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="700" fill="#991B1B">Render Linux</text>
+        <text x="297" y="67" text-anchor="middle" font-family="system-ui" font-size="9" fill="#EF4444">vite: Permission denied</text>
+        <text x="297" y="82" text-anchor="middle" font-family="system-ui" font-size="9" fill="#EF4444">sh: vite not executable</text>
+        <text x="297" y="97" text-anchor="middle" font-family="system-ui" font-size="9" fill="#EF4444">npx vite: same error</text>
+
+        <!-- Arrow to fix -->
+        <path d="M374 70 L430 70" stroke="#94A3B8" stroke-width="2" marker-end="url(#arr2)" stroke-dasharray="4,3"/>
+        <rect x="378" y="56" width="48" height="14" rx="3" fill="#F1F5F9"/>
+        <text x="402" y="66" text-anchor="middle" font-family="system-ui" font-size="8" fill="#64748B">Fix applied</text>
+
+        <!-- Fix box -->
+        <rect x="432" y="14" width="230" height="112" rx="8" fill="#ECFDF5" stroke="#86EFAC" stroke-width="1.5"/>
+        <text x="547" y="34" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="700" fill="#065F46">package.json fix</text>
+        <rect x="448" y="42" width="198" height="36" rx="5" fill="#0F172A"/>
+        <text x="460" y="55" font-family="Consolas, monospace" font-size="8.5" fill="#86EFAC">"build": "node</text>
+        <text x="460" y="68" font-family="Consolas, monospace" font-size="8.5" fill="#86EFAC">./node_modules/vite/bin/vite.js build"</text>
+        <text x="547" y="96" text-anchor="middle" font-family="system-ui" font-size="9" fill="#065F46">Calls Node directly — bypasses</text>
+        <text x="547" y="110" text-anchor="middle" font-family="system-ui" font-size="9" fill="#065F46">execute-bit requirement entirely</text>
+
+        <!-- Arrow to success -->
+        <path d="M664 70 L700 70" stroke="#10B981" stroke-width="2" marker-end="url(#arr2-grn)"/>
+
+        <!-- Success -->
+        <rect x="702" y="45" width="66" height="50" rx="8" fill="#ECFDF5" stroke="#86EFAC" stroke-width="1.5"/>
+        <text x="735" y="66" text-anchor="middle" font-family="system-ui" font-size="22">✅</text>
+        <text x="735" y="86" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="700" fill="#065F46">Build OK</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ┌───────────────────────────────────────
+       TAB: ISSUES
+  ─────────────────────────────────────────── -->
+  <section id="tab-issues" class="section-pane">
+
+    <!-- Summary bar -->
+    <div class="summary-bar">
+      <div class="summary-stat">
+        <div class="icon red">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <div>
+          <div class="label">Total Issues</div>
+          <div class="value">10 Found &amp; Fixed</div>
+        </div>
+      </div>
+      <div class="summary-stat">
+        <div class="icon green">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <div>
+          <div class="label">Tests Passing</div>
+          <div class="value">165 ✓</div>
+        </div>
+      </div>
+      <div class="summary-stat">
+        <div class="icon amber">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </div>
+        <div>
+          <div class="label">Categories</div>
+          <div class="value">Bug · Config · Test · Deploy</div>
+        </div>
+      </div>
+      <div class="summary-stat">
+        <div class="icon indigo">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <div>
+          <div class="label">Providers Supported</div>
+          <div class="value">Gemini · OpenAI · Groq</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="filter-bar">
+      <span style="font-size:.82rem;color:var(--slate-500);font-weight:600;margin-right:.25rem;">Filter:</span>
+      <button class="filter-btn active" onclick="filterIssues('all', this)">All (10)</button>
+      <button class="filter-btn" onclick="filterIssues('bug', this)">Bug</button>
+      <button class="filter-btn" onclick="filterIssues('config', this)">Config</button>
+      <button class="filter-btn" onclick="filterIssues('test', this)">Test</button>
+      <button class="filter-btn" onclick="filterIssues('deployment', this)">Deployment</button>
+    </div>
+
+    <!-- ══ ISSUE 1 ══ -->
+    <div class="issue-card" data-categories="config bug" id="issue-1">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">1</div>
+        <div class="card-meta">
+          <div class="card-title">Vitest OOM Crash on Node 18</div>
+          <div class="card-sub">FATAL ERROR: Zone Allocation failed — process out of memory</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-config">Config</span>
+          <span class="badge badge-bug">Bug</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">FATAL ERROR: Zone Allocation failed — process out of memory when running <code>npm test</code></div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">Vitest's default <code>threads</code> pool combined with jsdom uses too much memory on Node 18's 512 MB default heap. Each test worker spawns a full V8 heap.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">
+                <strong>Fix 1:</strong> Added <code>pool: 'forks'</code> to <code>vitest.config.ts</code> — forks use separate processes with lower overhead.<br><br>
+                <strong>Fix 2:</strong> Changed test script in <code>package.json</code> to invoke Vitest with an explicit 4 GB heap cap.
+              </div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>vitest.config.ts</span>
+              <span class="file-pill">vitest.config.ts</span>
+            </div>
+            <pre class="code"><span class="hl-key">pool</span>: <span class="hl-str">'forks'</span>,
+<span class="hl-key">isolate</span>: <span class="hl-key">true</span>,</pre>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>package.json test script</span>
+              <span class="file-pill">package.json</span>
+            </div>
+            <pre class="code"><span class="hl-str">"test"</span>: <span class="hl-str">"node --max-old-space-size=4096 node_modules/vitest/vitest.mjs run"</span></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 2 ══ -->
+    <div class="issue-card" data-categories="config" id="issue-2">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">2</div>
+        <div class="card-meta">
+          <div class="card-title">Build Chunk Size Warning (524 KB)</div>
+          <div class="card-sub">Vite warning: chunk size exceeds 500 KB limit</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-config">Config</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">Vite build warning: chunk exceeds 500 KB (524 KB) — hurts browser load performance</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">The entire <code>@google/genai</code> SDK was bundled into the main chunk alongside React, causing one large monolithic JS file.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">Added <code>manualChunks</code> in <code>vite.config.ts</code> to split vendor code into separate lazy-loadable chunks: <code>vendor-gemini</code>, <code>vendor-react</code>, and the app chunk.</div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>vite.config.ts — manualChunks</span>
+              <span class="file-pill">vite.config.ts</span>
+            </div>
+            <pre class="code"><span class="hl-key">build</span>: {
+  <span class="hl-key">rollupOptions</span>: {
+    <span class="hl-key">output</span>: {
+      <span class="hl-key">manualChunks</span>: {
+        <span class="hl-str">'vendor-gemini'</span>: [<span class="hl-str">'@google/genai'</span>],
+        <span class="hl-str">'vendor-react'</span>:  [<span class="hl-str">'react'</span>, <span class="hl-str">'react-dom'</span>],
+      },
+    },
+  },
+},</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 3 ══ -->
+    <div class="issue-card" data-categories="bug" id="issue-3">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">3</div>
+        <div class="card-meta">
+          <div class="card-title">429 RPM vs RPD Error Classification Bug</div>
+          <div class="card-sub">Rate-limit errors (retryable) classified as quota exhausted (not retryable)</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-bug">Bug</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">Rate-limit (RPM) errors — which should trigger a retry — were instead treated as daily quota (RPD) exhausted, stopping transcription entirely.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause"><code>lower.includes('exhausted')</code> matched <code>resource_exhausted</code>, which is the Gemini SDK error code for <em>all</em> 429 responses — not just daily quota ones. This caused false non-retryable classification.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">Removed <code>'exhausted'</code> from the RPD check. Only messages containing <code>'quota'</code>, <code>'daily'</code>, or <code>'per day'</code> now trigger the non-retryable path. All other 429s remain retryable.</div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>Before (broken)</span>
+              <span class="file-pill">gemini.ts</span>
+            </div>
+            <pre class="code"><span class="hl-cmt">// BUG: 'exhausted' matches resource_exhausted (ALL 429s)</span>
+<span class="hl-key">const</span> isRpd = lower.includes(<span class="hl-str">'exhausted'</span>)
+            || lower.includes(<span class="hl-str">'quota'</span>)
+            || lower.includes(<span class="hl-str">'daily'</span>);</pre>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label"><span>After (fixed)</span></div>
+            <pre class="code"><span class="hl-cmt">// FIX: Only real daily-quota messages are non-retryable</span>
+<span class="hl-key">const</span> isRpd = lower.includes(<span class="hl-str">'quota'</span>)
+            || lower.includes(<span class="hl-str">'daily'</span>)
+            || lower.includes(<span class="hl-str">'per day'</span>);</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 4 ══ -->
+    <div class="issue-card" data-categories="bug test" id="issue-4">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">4</div>
+        <div class="card-meta">
+          <div class="card-title">buildTranscriptionPrompt Not Filtering Empty Participants</div>
+          <div class="card-sub">Empty strings leaked into the prompt; test "filters out empty strings" failed</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-bug">Bug</span>
+          <span class="badge badge-test">Test</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">Test <em>"filters out empty strings from participants array"</em> failed. Empty strings like <code>""</code> were appearing verbatim in the prompt sent to Gemini.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">The participant line used <code>.map()</code> directly on the raw participants array without a prior <code>.filter()</code> step to remove empty or whitespace-only entries.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">Added <code>.filter(p =&gt; p.trim())</code> before <code>.map()</code> and wrapped each name in quotes to prevent sentence-structure issues in the prompt.</div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>Fixed participant line</span>
+              <span class="file-pill">gemini.ts</span>
+            </div>
+            <pre class="code">ctx!.participants
+  .<span class="hl-fn">filter</span>(p => p.<span class="hl-fn">trim</span>())          <span class="hl-cmt">// drop empty / whitespace-only</span>
+  .<span class="hl-fn">map</span>(p => `<span class="hl-str">"${p.trim()}"</span>`)        <span class="hl-cmt">// wrap in quotes</span>
+  .<span class="hl-fn">join</span>(<span class="hl-str">', '</span>)</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 5 ══ -->
+    <div class="issue-card" data-categories="test" id="issue-5">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">5</div>
+        <div class="card-meta">
+          <div class="card-title">AudioInput Amber Warning Test: Multiple Element Match</div>
+          <div class="card-sub">TestingLibraryElementError: Found multiple elements matching /Speaker A.*Speaker B/i</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-test">Test</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom"><code>TestingLibraryElementError: Found multiple elements with the text: /Speaker A.*Speaker B/i</code></div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">Both the dynamic amber warning div <em>and</em> the static hint text <em>"Providing names lets Gemini label speakers… instead of 'Speaker A / Speaker B'"</em> matched the same regex <code>/Speaker A.*Speaker B/i</code>.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">Changed the test query from <code>/Speaker A.*Speaker B/i</code> to <code>/No names provided/i</code> — text that is unique to the amber warning element only.</div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>Test fix</span>
+              <span class="file-pill">AudioInput.test.tsx</span>
+            </div>
+            <pre class="code"><span class="hl-cmt">// Before (matches two elements):</span>
+expect(screen.<span class="hl-fn">getByText</span>(<span class="hl-str">/Speaker A.*Speaker B/i</span>))...
+
+<span class="hl-cmt">// After (unique to amber warning):</span>
+expect(screen.<span class="hl-fn">getByText</span>(<span class="hl-str">/No names provided/i</span>))...</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 6 ══ -->
+    <div class="issue-card" data-categories="test" id="issue-6">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">6</div>
+        <div class="card-meta">
+          <div class="card-title">deployment.test.ts Wrong Path (One Level Too Deep)</div>
+          <div class="card-sub">ENOENT: scandir landing at meetingsense-ai/ instead of voice-transcriber/</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-test">Test</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom"><code>ENOENT: no such file or directory, scandir 'D:\...\meetingsense-ai\src'</code> — test was scanning the wrong project root.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause"><code>path.resolve(__dirname, '../../..')</code> traversed 3 levels up from <code>src/__tests__/</code>, landing at <code>meetingsense-ai/</code> (the monorepo parent) instead of the <code>voice-transcriber/</code> project root.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">Changed to <code>path.resolve(__dirname, '../..')</code> — 2 levels up from <code>src/__tests__/</code> correctly resolves to <code>voice-transcriber/</code>.</div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>Path resolution fix</span>
+              <span class="file-pill">deployment.test.ts</span>
+            </div>
+            <pre class="code"><span class="hl-cmt">// Before (wrong — 3 levels up = meetingsense-ai/):</span>
+<span class="hl-key">const</span> ROOT = path.<span class="hl-fn">resolve</span>(__dirname, <span class="hl-str">'../../..'</span>);
+
+<span class="hl-cmt">// After (correct — 2 levels up = voice-transcriber/):</span>
+<span class="hl-key">const</span> ROOT = path.<span class="hl-fn">resolve</span>(__dirname, <span class="hl-str">'../..'</span>);</pre>
+          </div>
+          <div class="note-box">
+            <svg class="note-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>Directory structure: <code>voice-transcriber/src/__tests__/deployment.test.ts</code> — <code>__dirname</code> is at <code>src/__tests__/</code>, so <code>../..</code> = <code>voice-transcriber/</code>.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 7 ══ -->
+    <div class="issue-card" data-categories="bug" id="issue-7">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">7</div>
+        <div class="card-meta">
+          <div class="card-title">Groq Hallucinating Participant Names During Silence</div>
+          <div class="card-sub">Repeated lines like "[00:01:18] Participants, Harish, Murali." every 30 s</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-bug">Bug</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">Transcript output contained repeated lines like <em>[00:01:18] Participants, Harish, Murali.</em> appearing every ~30 seconds during silent gaps.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">Passing <code>"Meeting participants: Harish, Murali."</code> as the Whisper prompt caused Whisper to echo speech-like sentences verbatim during silence — a known Whisper hallucination behavior when the prompt resembles a sentence.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">
+                <strong>Fix 1:</strong> Changed prompt format from a sentence <code>"Meeting participants: X, Y."</code> to bare vocabulary hints <code>"X, Y"</code> — bare words are treated as spelling hints, not speech to repeat.<br><br>
+                <strong>Fix 2:</strong> Added a post-processing regex filter to strip any output line that accidentally matches the participant name pattern.
+              </div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>Prompt format change</span>
+              <span class="file-pill">groq.ts</span>
+              <span class="file-pill">openai.ts</span>
+            </div>
+            <pre class="code"><span class="hl-cmt">// Before (sentence format — Whisper echoes it):</span>
+prompt: <span class="hl-str">`Meeting participants: ${names}.`</span>
+
+<span class="hl-cmt">// After (bare vocabulary hints — safe):</span>
+prompt: names.<span class="hl-fn">join</span>(<span class="hl-str">', '</span>)  <span class="hl-cmt">// e.g. "Harish, Murali"</span></pre>
+          </div>
+          <div class="note-box">
+            <svg class="note-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span><strong>Expected behavior note:</strong> No speaker labels (Speaker A/B) with Groq is intentional — Whisper does not support diarization. Speaker labels are a Gemini-only feature.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 8 ══ -->
+    <div class="issue-card" data-categories="test" id="issue-8">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">8</div>
+        <div class="card-meta">
+          <div class="card-title">ApiKeySetup Tests Broken After Provider Selection Step Added</div>
+          <div class="card-sub">10 test failures — Unable to find element with placeholder /AIza/i</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-test">Test</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">10 test failures: <code>Unable to find an element with the placeholder text: /AIza/i</code> — tests expected to open directly on the API key input step.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">Adding the provider selection screen as a new <em>first</em> step of <code>ApiKeySetup</code> broke all existing tests — they assumed the component opened directly on the key input step (Gemini was previously the only provider).</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">
+                <strong>1.</strong> Updated mocks to target <code>@/services/transcription</code> index instead of <code>gemini.ts</code> directly.<br><br>
+                <strong>2.</strong> Added a <code>selectGemini()</code> helper that simulates clicking the Google Gemini provider card.<br><br>
+                <strong>3.</strong> Called <code>selectGemini()</code> at the start of every test that needs to reach the key input step.
+              </div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>Test helper added</span>
+              <span class="file-pill">ApiKeySetup.test.tsx</span>
+            </div>
+            <pre class="code"><span class="hl-cmt">// Helper: navigates past the provider selection screen</span>
+<span class="hl-key">async function</span> <span class="hl-fn">selectGemini</span>() {
+  <span class="hl-fn">render</span>(&lt;ApiKeySetup ... /&gt;);
+  <span class="hl-key">const</span> card = screen.<span class="hl-fn">getByText</span>(<span class="hl-str">/Google Gemini/i</span>)
+                     .<span class="hl-fn">closest</span>(<span class="hl-str">'[role="button"]'</span>)!;
+  <span class="hl-key">await</span> userEvent.<span class="hl-fn">click</span>(card);
+}
+
+<span class="hl-cmt">// Usage in each test:</span>
+<span class="hl-fn">it</span>(<span class="hl-str">'validates API key format'</span>, <span class="hl-key">async</span> () => {
+  <span class="hl-key">await</span> <span class="hl-fn">selectGemini</span>();
+  <span class="hl-cmt">// now /AIza/i placeholder is visible</span>
+  screen.<span class="hl-fn">getByPlaceholderText</span>(<span class="hl-str">/AIza/i</span>);
+});</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 9 ══ -->
+    <div class="issue-card" data-categories="deployment" id="issue-9">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">9</div>
+        <div class="card-meta">
+          <div class="card-title">Render — Only One Repo Visible in Static Site Setup</div>
+          <div class="card-sub">voice-transcriber repo not shown in Render's repo picker</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-deployment">Deployment</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">Render's "New Static Site" screen only showed one old repo (RenderResume). The voice-transcriber repo was invisible in the picker.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">Render's GitHub OAuth app only has access to repos explicitly granted during installation. Newly created repos are not automatically visible to Render.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied — Two Options</div>
+              <div class="dv fix">
+                <strong>Option A (quick):</strong> Use "Public Git Repository" tab → paste the full HTTPS URL directly.<br><br>
+                <strong>Option B (proper):</strong> GitHub → Settings → Applications → Authorized GitHub Apps → Render → Configure → add voice-transcriber → Save → refresh Render.
+              </div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label"><span>Option A — Public Git URL</span></div>
+            <pre class="code">https://github.com/saiharish29/voice-transcriber</pre>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label"><span>Option B — GitHub App path</span></div>
+            <pre class="code">GitHub → Settings → Applications
+  → Authorized GitHub Apps → Render → Configure
+  → Repository access → Add repository → voice-transcriber
+  → Save</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ ISSUE 10 ══ -->
+    <div class="issue-card" data-categories="deployment" id="issue-10">
+      <div class="card-header" onclick="toggleCard(this)">
+        <div class="issue-num">10</div>
+        <div class="card-meta">
+          <div class="card-title">Render Build Fails — vite: Permission Denied</div>
+          <div class="card-sub">sh: 1: vite: Permission denied after npm install succeeds</div>
+        </div>
+        <div class="card-badges">
+          <span class="badge badge-deployment">Deployment</span>
+          <span class="badge badge-bug">Bug</span>
+          <span class="badge badge-fixed">Fixed</span>
+          <div class="badge-status-dot"></div>
+        </div>
+        <svg class="card-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="card-body">
+        <div class="card-body-inner">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="dl">Symptom</div>
+              <div class="dv symptom">Render build log: <code>sh: 1: vite: Permission denied</code> after <code>npm install</code> completes successfully. <code>npx vite build</code> also fails with the same error.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Root Cause</div>
+              <div class="dv cause">Windows git does not preserve Unix execute (<code>+x</code>) bits. When the repo is cloned on Render's Linux server, <code>node_modules/.bin/vite</code> shell script loses its execute permission. <code>npx</code> also fails because it invokes the same binary.</div>
+            </div>
+            <div class="detail-box">
+              <div class="dl">Fix Applied</div>
+              <div class="dv fix">Changed the build script from <code>"vite build"</code> to <code>"node ./node_modules/vite/bin/vite.js build"</code> — invokes Node directly on the JS entrypoint, bypassing shell script execute permissions entirely. Render build command reverted to <code>npm install &amp;&amp; npm run build</code>.</div>
+            </div>
+          </div>
+          <div class="code-block-wrap">
+            <div class="code-block-label">
+              <span>package.json build script fix</span>
+              <span class="file-pill">package.json</span>
+            </div>
+            <pre class="code"><span class="hl-cmt">// Before (breaks on Render Linux):</span>
+<span class="hl-str">"build"</span>: <span class="hl-str">"vite build"</span>
+
+<span class="hl-cmt">// After (calls Node directly — no exec bit needed):</span>
+<span class="hl-str">"build"</span>: <span class="hl-str">"node ./node_modules/vite/bin/vite.js build"</span></pre>
+          </div>
+          <div class="note-box">
+            <svg class="note-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>This is a cross-platform gotcha unique to developers on Windows who push to Linux CI/CD servers. The fix is permanent — no <code>chmod</code> required.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ┌───────────────────────────────────────
+       TAB: DEPLOYMENT GUIDE
+  ─────────────────────────────────────────── -->
+  <section id="tab-deployment" class="section-pane">
+    <h2 class="section-title">Render Deployment Guide</h2>
+    <p class="section-subtitle">Complete step-by-step instructions to deploy Voice Transcriber as a static site on Render. Check off each step as you go.</p>
+
+    <div class="deploy-grid">
+
+      <!-- Step 1 -->
+      <div class="deploy-step">
+        <div class="step-num-wrap">
+          <div class="step-checkbox" onclick="toggleCheck(this)" title="Mark complete">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" class="check-icon" style="display:none"><polyline points="2 6 5 9 10 3"/></svg>
+          </div>
+          <div class="step-num">01</div>
+        </div>
+        <div class="step-body">
+          <div class="step-title">Push Code to GitHub</div>
+          <div class="step-desc">Initialize a git repo, commit all files, and push to a new GitHub repository.</div>
+          <div class="step-cmds">
+            <div class="cmd"><span class="prompt">$</span>git init</div>
+            <div class="cmd"><span class="prompt">$</span>git add .</div>
+            <div class="cmd"><span class="prompt">$</span>git commit -m "Initial release"</div>
+            <div class="cmd"><span class="prompt">$</span>git branch -M main</div>
+            <div class="cmd"><span class="prompt">$</span>git remote add origin https://github.com/saiharish29/voice-transcriber.git</div>
+            <div class="cmd"><span class="prompt">$</span>git push -u origin main</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="deploy-step">
+        <div class="step-num-wrap">
+          <div class="step-checkbox" onclick="toggleCheck(this)" title="Mark complete">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" class="check-icon" style="display:none"><polyline points="2 6 5 9 10 3"/></svg>
+          </div>
+          <div class="step-num">02</div>
+        </div>
+        <div class="step-body">
+          <div class="step-title">Create a Render Account</div>
+          <div class="step-desc">Sign up at render.com using your GitHub account for seamless repo access.</div>
+          <div class="step-kv-list">
+            <div class="step-kv"><span class="k">URL</span><span class="v">render.com</span></div>
+            <div class="step-kv"><span class="k">Action</span><span class="v">Get Started for Free</span></div>
+            <div class="step-kv"><span class="k">Sign up with</span><span class="v">GitHub (recommended)</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="deploy-step">
+        <div class="step-num-wrap">
+          <div class="step-checkbox" onclick="toggleCheck(this)" title="Mark complete">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" class="check-icon" style="display:none"><polyline points="2 6 5 9 10 3"/></svg>
+          </div>
+          <div class="step-num">03</div>
+        </div>
+        <div class="step-body">
+          <div class="step-title">Create a New Static Site</div>
+          <div class="step-desc">From the Render dashboard, create a new Static Site service.</div>
+          <div class="step-kv-list">
+            <div class="step-kv"><span class="k">Navigate to</span><span class="v">Dashboard → New +</span></div>
+            <div class="step-kv"><span class="k">Select</span><span class="v">Static Site</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="deploy-step">
+        <div class="step-num-wrap">
+          <div class="step-checkbox" onclick="toggleCheck(this)" title="Mark complete">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" class="check-icon" style="display:none"><polyline points="2 6 5 9 10 3"/></svg>
+          </div>
+          <div class="step-num">04</div>
+        </div>
+        <div class="step-body">
+          <div class="step-title">Connect Repository</div>
+          <div class="step-desc">Use the Public Git Repository tab to paste the URL directly — avoids GitHub OAuth permission issues (see Issue 9).</div>
+          <div class="step-kv-list">
+            <div class="step-kv"><span class="k">Click tab</span><span class="v">Public Git Repository</span></div>
+            <div class="step-kv"><span class="k">Paste URL</span><span class="v">https://github.com/saiharish29/voice-transcriber</span></div>
+            <div class="step-kv"><span class="k">Click</span><span class="v">Continue</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="deploy-step">
+        <div class="step-num-wrap">
+          <div class="step-checkbox" onclick="toggleCheck(this)" title="Mark complete">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" class="check-icon" style="display:none"><polyline points="2 6 5 9 10 3"/></svg>
+          </div>
+          <div class="step-num">05</div>
+        </div>
+        <div class="step-body">
+          <div class="step-title">Configure Build Settings</div>
+          <div class="step-desc">Enter the exact settings below. The build command uses <code>node ... vite.js</code> to bypass the Windows execute-bit issue (see Issue 10).</div>
+          <div class="step-kv-list">
+            <div class="step-kv"><span class="k">Name</span><span class="v">voice-transcriber</span></div>
+            <div class="step-kv"><span class="k">Branch</span><span class="v">main</span></div>
+            <div class="step-kv"><span class="k">Root Directory</span><span class="v">(leave blank)</span></div>
+            <div class="step-kv"><span class="k">Build Command</span><span class="v">npm install &amp;&amp; npm run build</span></div>
+            <div class="step-kv"><span class="k">Publish Directory</span><span class="v">dist</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 6 -->
+      <div class="deploy-step">
+        <div class="step-num-wrap">
+          <div class="step-checkbox" onclick="toggleCheck(this)" title="Mark complete">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" class="check-icon" style="display:none"><polyline points="2 6 5 9 10 3"/></svg>
+          </div>
+          <div class="step-num">06</div>
+        </div>
+        <div class="step-body">
+          <div class="step-title">Deploy</div>
+          <div class="step-desc">Trigger the first build and watch the live log stream in Render's dashboard.</div>
+          <div class="step-kv-list">
+            <div class="step-kv"><span class="k">Click</span><span class="v">Create Static Site</span></div>
+            <div class="step-kv"><span class="k">Watch</span><span class="v">Live build log</span></div>
+            <div class="step-kv"><span class="k">Wait for</span><span class="v">Deploy is live 🚀</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 7 -->
+      <div class="deploy-step">
+        <div class="step-num-wrap">
+          <div class="step-checkbox" onclick="toggleCheck(this)" title="Mark complete">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" class="check-icon" style="display:none"><polyline points="2 6 5 9 10 3"/></svg>
+          </div>
+          <div class="step-num">07</div>
+        </div>
+        <div class="step-body">
+          <div class="step-title">Enjoy Auto-Deploy on Every Push</div>
+          <div class="step-desc">From now on, every <code>git push</code> to <code>main</code> automatically triggers a new Render build and deploys the latest version within minutes.</div>
+          <div class="step-cmds">
+            <div class="cmd"><span class="prompt">$</span>git add .</div>
+            <div class="cmd"><span class="prompt">$</span>git commit -m "feat: update transcription logic"</div>
+            <div class="cmd"><span class="prompt">$</span>git push</div>
+          </div>
+          <div class="step-kv-list" style="margin-top:.5rem">
+            <div class="step-kv"><span class="k">Result</span><span class="v">Render auto-deploys in ~2 min</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Quick reference table -->
+    <h3 style="font-size:1.1rem;font-weight:700;color:var(--slate-900);margin-bottom:1rem;">Build Configuration Quick Reference</h3>
+    <div style="background:#fff;border:1px solid var(--slate-200);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);margin-bottom:2rem;">
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem;">
+        <thead>
+          <tr style="background:var(--slate-900);color:#E2E8F0;">
+            <th style="padding:.75rem 1rem;text-align:left;font-weight:700;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px;">Setting</th>
+            <th style="padding:.75rem 1rem;text-align:left;font-weight:700;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px;">Value</th>
+            <th style="padding:.75rem 1rem;text-align:left;font-weight:700;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px;">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-top:1px solid var(--slate-100);">
+            <td style="padding:.7rem 1rem;font-weight:600;color:var(--slate-700);">Service Type</td>
+            <td style="padding:.7rem 1rem;font-family:monospace;color:var(--indigo);">Static Site</td>
+            <td style="padding:.7rem 1rem;color:var(--slate-500);">No server needed — pure SPA</td>
+          </tr>
+          <tr style="border-top:1px solid var(--slate-100);background:var(--slate-50);">
+            <td style="padding:.7rem 1rem;font-weight:600;color:var(--slate-700);">Branch</td>
+            <td style="padding:.7rem 1rem;font-family:monospace;color:var(--indigo);">main</td>
+            <td style="padding:.7rem 1rem;color:var(--slate-500);">Auto-deploy on push</td>
+          </tr>
+          <tr style="border-top:1px solid var(--slate-100);">
+            <td style="padding:.7rem 1rem;font-weight:600;color:var(--slate-700);">Build Command</td>
+            <td style="padding:.7rem 1rem;font-family:monospace;font-size:.8rem;color:var(--indigo);">npm install &amp;&amp; npm run build</td>
+            <td style="padding:.7rem 1rem;color:var(--slate-500);">build script calls node ... vite.js</td>
+          </tr>
+          <tr style="border-top:1px solid var(--slate-100);background:var(--slate-50);">
+            <td style="padding:.7rem 1rem;font-weight:600;color:var(--slate-700);">Publish Directory</td>
+            <td style="padding:.7rem 1rem;font-family:monospace;color:var(--indigo);">dist</td>
+            <td style="padding:.7rem 1rem;color:var(--slate-500);">Vite default output folder</td>
+          </tr>
+          <tr style="border-top:1px solid var(--slate-100);">
+            <td style="padding:.7rem 1rem;font-weight:600;color:var(--slate-700);">Root Directory</td>
+            <td style="padding:.7rem 1rem;font-family:monospace;color:var(--slate-400);">(empty)</td>
+            <td style="padding:.7rem 1rem;color:var(--slate-500);">Repo root is project root</td>
+          </tr>
+          <tr style="border-top:1px solid var(--slate-100);background:var(--slate-50);">
+            <td style="padding:.7rem 1rem;font-weight:600;color:var(--slate-700);">Node Version</td>
+            <td style="padding:.7rem 1rem;font-family:monospace;color:var(--indigo);">18.x (Render default)</td>
+            <td style="padding:.7rem 1rem;color:var(--slate-500);">OOM fixed via forks pool</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- ══════════════════════════════════════════
+     FOOTER
+══════════════════════════════════════════ -->
+<footer>
+  <strong>Voice Transcriber</strong> — BYOK Meeting Transcription SPA
+  <div class="footer-meta">
+    <div class="footer-chip">
+      <div class="dot"></div>
+      165 tests passing
+    </div>
+    <div class="footer-chip">
+      <div class="dot"></div>
+      10 issues resolved
+    </div>
+    <div class="footer-chip">
+      <div class="dot" style="background:var(--indigo);"></div>
+      Deployed on Render
+    </div>
+    <div class="footer-chip" style="border-color:var(--slate-600);">
+      <span style="color:var(--slate-400);">Last updated: April 10, 2026</span>
+    </div>
+  </div>
+  <p style="margin-top:1rem;color:var(--slate-600);">Providers: Gemini 2.0 Flash &nbsp;·&nbsp; OpenAI Whisper &nbsp;·&nbsp; Groq Whisper &nbsp;·&nbsp; Built with React + Vite + TypeScript</p>
+</footer>
+
+<!-- ══════════════════════════════════════════
+     JAVASCRIPT
+══════════════════════════════════════════ -->
+<script>
+  // ── Tab switching ──
+  function switchTab(name) {
+    document.querySelectorAll('.section-pane').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    document.querySelector('[data-tab="' + name + '"]').classList.add('active');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // ── Card expand/collapse ──
+  function toggleCard(header) {
+    const card = header.closest('.issue-card');
+    card.classList.toggle('open');
+  }
+
+  // ── Filter issues ──
+  function filterIssues(category, btn) {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.issue-card').forEach(card => {
+      if (category === 'all') {
+        card.style.display = '';
+      } else {
+        const cats = (card.getAttribute('data-categories') || '').split(' ');
+        card.style.display = cats.includes(category) ? '' : 'none';
+      }
+    });
+  }
+
+  // ── Deployment step checkboxes ──
+  function toggleCheck(el) {
+    const isChecked = el.classList.toggle('checked');
+    const icon = el.querySelector('.check-icon');
+    icon.style.display = isChecked ? 'block' : 'none';
+    const step = el.closest('.deploy-step');
+    step.style.opacity = isChecked ? '0.65' : '1';
+    step.style.borderColor = isChecked ? 'var(--green)' : '';
+  }
+
+  // ── Keyboard accessibility for cards ──
+  document.querySelectorAll('.card-header').forEach(header => {
+    header.setAttribute('tabindex', '0');
+    header.setAttribute('role', 'button');
+    header.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCard(header); }
+    });
+  });
+
+  // ── Auto-open first issue for demo ──
+  // (intentionally left closed so user can explore)
+</script>
+</body>
+</html>
