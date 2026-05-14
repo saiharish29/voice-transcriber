@@ -45,9 +45,9 @@ const MAX_RETRIES          = 3;
 const RETRY_BASE_MS        = 3_000;
 const RATE_LIMIT_WAIT_MS   = 65_000;
 /** Timeout for the entire File API upload + polling phase. */
-const UPLOAD_TIMEOUT_MS    = 10 * 60 * 1_000;  // 10 minutes
+const UPLOAD_TIMEOUT_MS    = 15 * 60 * 1_000;  // 15 minutes (covers slow connections uploading 2-hr files)
 /** Timeout for the generateContent call. */
-const GENERATE_TIMEOUT_MS  = 12 * 60 * 1_000;  // 12 minutes
+const GENERATE_TIMEOUT_MS  = 20 * 60 * 1_000;  // 20 minutes (Gemini needs ~8-12 min for 2-hr audio)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Known Gemini models that support audio input */

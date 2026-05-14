@@ -223,10 +223,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       const recorder = new MediaRecorder(destination.stream, {
         mimeType,
         // FIX 1: Cap bitrate so recordings stay well within provider file-size limits.
-        //   64 kbps Opus stereo is indistinguishable from higher bitrates for speech.
-        //   10 min → ~4.8 MB   (fine for Groq, OpenAI, and Gemini inline)
-        //   60 min → ~28.8 MB  (uses Gemini File API — still works)
-        audioBitsPerSecond: 64_000,
+        //   48 kbps Opus stereo is transparent for speech (Opus is efficient at this rate).
+        //   10 min  → ~3.6 MB   (Gemini inline / Groq / OpenAI — all fine)
+        //   60 min  → ~21.6 MB  (Gemini inline — still under 25 MB limit)
+        //   2 hours → ~43.2 MB  (Gemini File API — well within 2 GB limit)
+        //   3 hours → ~64.8 MB  (Gemini File API — still fine)
+        audioBitsPerSecond: 48_000,
       });
 
       recorder.ondataavailable = e => {
