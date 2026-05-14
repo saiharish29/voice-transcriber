@@ -2,51 +2,92 @@
  * groq.ts — Groq transcription provider.
  *
  * Groq runs Whisper inference at very high speeds via an OpenAI-compatible API.
- * The free tier is generous (~2 hours of audio per day at the time of writing).
+ * The free tier is generous (~2 hours of audio per day at time of writing).
  *
  * Limitations vs Gemini / GPT-4o:
- *   - Max file size: 25 MB (same as OpenAI Whisper)
- *   - No speaker diarization — returns a plain timestamped transcript
- *   - Participant names are passed as a `prompt` hint so Whisper transcribes
- *     them correctly, but the output will not have Speaker X: labels
+ * - Max file size: 25 MB (same as OpenAI Whisper)
+ * - No speaker diarization — returns a plain timestamped transcript
+ * - Participant names are passed as a `prompt` hint so Whisper transcribes
+ *   them correctly, but the output will not have Speaker X: labels
  *
  * Best for: quick transcripts, English meetings, users who want a free tier
  *
  * Get a free API key at: console.groq.com/keys
+ *
+ * ── FIXES IN THIS VERSION ────────────────────────────────────────────────────
+ * FIX 1 — normalizeMimeType() strips codec parameters
+ *   FormData sends file.type as-is. Groq's API rejects "audio/webm;codecs=opus"
+ *   so we re-wrap the Blob with the clean MIME type before uploading.
+ *
+ * FIX 2 — Promise.race() fetch timeout (5 minutes)
+ *   Without a timeout a stalled connection hangs the UI indefinitely.
+ *
+ * FIX 3 — Chunked transcription for uploaded files > 25 MB
+ *   Large files are split into ≤ 23 MB blobs, each transcribed separately,
+ *   then concatenated. Live recordings stay well under 25 MB because
+ *   useAudioRecorder.ts caps the bitrate at 64 kbps.
  */
 
 import type { MeetingContext } from '@/types';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const BASE_URL            = 'https://api.groq.com/openai';
-export const INLINE_LIMIT_BYTES_GROQ = 25 * 1024 * 1024; // 25 MB
+const BASE_URL               = 'https://api.groq.com/openai';
+export const INLINE_LIMIT_BYTES_GROQ = 25 * 1024 * 1024; // 25 MB Groq hard limit
+/** Each chunk sent to Groq must be comfortably under the 25 MB limit. */
+const CHUNK_SIZE_BYTES       = 23 * 1024 * 1024;          // 23 MB per chunk
+/** Timeout per Groq request. */
+const REQUEST_TIMEOUT_MS     = 5 * 60 * 1_000;            // 5 minutes
 
 export const GROQ_AUDIO_MODELS = [
   {
-    id:            'whisper-large-v3',
-    displayName:   'Whisper Large v3',
-    description:   'Best accuracy — recommended for most meetings',
-    isRecommended: true,
+    id:              'whisper-large-v3',
+    displayName:     'Whisper Large v3',
+    description:     'Best accuracy — recommended for most meetings',
+    isRecommended:   true,
     inputTokenLimit: null,
   },
   {
-    id:            'whisper-large-v3-turbo',
-    displayName:   'Whisper Large v3 Turbo',
-    description:   'Faster, slightly less accurate',
-    isRecommended: false,
+    id:              'whisper-large-v3-turbo',
+    displayName:     'Whisper Large v3 Turbo',
+    description:     'Faster, slightly less accurate',
+    isRecommended:   false,
     inputTokenLimit: null,
   },
   {
-    id:            'distil-whisper-large-v3-en',
-    displayName:   'Distil-Whisper Large v3 (English only)',
-    description:   'Fastest — English-only meetings',
-    isRecommended: false,
+    id:              'distil-whisper-large-v3-en',
+    displayName:     'Distil-Whisper Large v3 (English only)',
+    description:     'Fastest — English-only meetings',
+    isRecommended:   false,
     inputTokenLimit: null,
   },
 ];
 
 export const DEFAULT_GROQ_MODEL = 'whisper-large-v3';
+
+// ── MIME type normalisation ───────────────────────────────────────────────────
+
+/**
+ * Strip codec / parameter suffixes that Groq's API does not accept.
+ * "audio/webm;codecs=opus"  →  "audio/webm"
+ */
+function normalizeMimeType(type: string): string {
+  const base = (type || 'audio/webm').split(';')[0].trim();
+  return base || 'audio/webm';
+}
+
+/** Rejects after `ms` milliseconds with a clear timeout error. */
+function timeoutAfter(ms: number, label: string): Promise<never> {
+  return new Promise((_, reject) =>
+    setTimeout(
+      () => reject(new Error(
+        `${label} timed out after ${Math.round(ms / 60_000)} minutes. ` +
+        `Check your network connection and try again.`
+      )),
+      ms
+    )
+  );
+}
 
 // ── Error classification ──────────────────────────────────────────────────────
 
@@ -66,6 +107,9 @@ export function classifyGroqError(err: unknown): { message: string; retryable: b
   }
   if (status === 503 || lower.includes('service unavailable')) {
     return { message: 'Groq is temporarily unavailable. Retrying...', retryable: true, waitMs: 10_000 };
+  }
+  if (lower.includes('timed out')) {
+    return { message: raw, retryable: true };
   }
   return { message: raw || 'Transcription failed. Please try again.', retryable: true };
 }
@@ -90,50 +134,36 @@ export async function fetchGroqModels(_apiKey: string) {
   return GROQ_AUDIO_MODELS;
 }
 
-// ── Core transcription ────────────────────────────────────────────────────────
+// ── Single-blob transcription helper ─────────────────────────────────────────
 
-export async function transcribeWithGroq(
-  file: File,
+async function transcribeBlob(
+  blob: Blob,
+  mimeType: string,
+  filename: string,
   apiKey: string,
   model: string,
-  onProgress: (stage: string, detail?: string) => void,
-  context?: MeetingContext,
-): Promise<string> {
-  if (file.size > INLINE_LIMIT_BYTES_GROQ) {
-    throw new Error(
-      `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — Groq's Whisper API has a 25 MB limit. ` +
-      `Switch to Gemini in Settings to handle larger recordings (supports up to 2 GB).`
-    );
-  }
-
-  onProgress('Transcribing', `Sending to Groq Whisper (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+  promptHint: string,
+): Promise<any> {
+  // FIX 1: Re-wrap with clean MIME type so Content-Type is "audio/webm" not
+  // "audio/webm;codecs=opus" which Groq rejects.
+  const cleanBlob = new Blob([blob], { type: mimeType });
 
   const form = new FormData();
-  form.append('file', file);
+  form.append('file', cleanBlob, filename);
   form.append('model', model);
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'segment');
+  if (promptHint) form.append('prompt', promptHint);
 
-  // Pass names as a bare word list — NOT a full sentence like "Participants: X, Y."
-  // Whisper hallucinates by repeating the prompt verbatim during silence when the
-  // prompt looks like speech. Bare names are treated as vocabulary, not as spoken words.
-  const names = [
-    context?.hostName ?? '',
-    ...(context?.participants ?? []),
-  ].filter(Boolean);
-  if (names.length > 0) {
-    // Brief title prefix helps domain context; names alone fix spelling
-    const hint = context?.meetingTitle
-      ? `${context.meetingTitle}: ${names.join(', ')}`
-      : names.join(', ');
-    form.append('prompt', hint);
-  }
-
-  const res = await fetch(`${BASE_URL}/v1/audio/transcriptions`, {
-    method:  'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body:    form,
-  });
+  // FIX 2: Hard timeout so a stalled upload/response doesn't hang the UI.
+  const res = await Promise.race([
+    fetch(`${BASE_URL}/v1/audio/transcriptions`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body:    form,
+    }),
+    timeoutAfter(REQUEST_TIMEOUT_MS, 'Groq transcription request'),
+  ]);
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -143,29 +173,105 @@ export async function transcribeWithGroq(
     );
   }
 
-  const data = await res.json();
+  return res.json();
+}
 
-  if (data.segments?.length > 0) {
-    // Build a regex that matches Whisper hallucinations of the participant names prompt.
-    // Whisper sometimes echoes the prompt text verbatim as a standalone segment during
-    // silence — strip those lines so they don't pollute the transcript.
-    const namePattern = names.length > 0
-      ? new RegExp(`^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*(participants?[,:]?\\s*)?${
+// ── Segment formatter ─────────────────────────────────────────────────────────
+
+function formatSegments(data: any, offsetSeconds: number, names: string[]): string {
+  if (!data.segments?.length) return data.text ?? '';
+
+  const namePattern = names.length > 0
+    ? new RegExp(
+        `^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*(participants?[,:]?\\s*)?${
           names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[,\\s]+')
-        }[.,]?\\s*$`, 'i')
-      : null;
+        }[.,]?\\s*$`,
+        'i'
+      )
+    : null;
 
-    return data.segments
-      .map((seg: any) => {
-        const h  = Math.floor(seg.start / 3600);
-        const m  = Math.floor((seg.start % 3600) / 60);
-        const s  = Math.floor(seg.start % 60);
-        const ts = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-        return `[${ts}] ${seg.text.trim()}`;
-      })
-      .filter((line: string) => !namePattern || !namePattern.test(line))
-      .join('\n');
+  return data.segments
+    .map((seg: any) => {
+      const t  = seg.start + offsetSeconds;
+      const h  = Math.floor(t / 3600);
+      const m  = Math.floor((t % 3600) / 60);
+      const s  = Math.floor(t % 60);
+      const ts = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      return `[${ts}] ${seg.text.trim()}`;
+    })
+    .filter((line: string) => !namePattern || !namePattern.test(line))
+    .join('\n');
+}
+
+// ── Core transcription ────────────────────────────────────────────────────────
+
+export async function transcribeWithGroq(
+  file: File,
+  apiKey: string,
+  model: string,
+  onProgress: (stage: string, detail?: string) => void,
+  context?: MeetingContext,
+): Promise<string> {
+  const mimeType = normalizeMimeType(file.type);
+
+  // Build names prompt hint (vocabulary priming for Whisper)
+  const names = [
+    context?.hostName ?? '',
+    ...(context?.participants ?? []),
+  ].filter(Boolean);
+
+  const promptHint = names.length > 0
+    ? (context?.meetingTitle
+        ? `${context.meetingTitle}: ${names.join(', ')}`
+        : names.join(', '))
+    : '';
+
+  // ── FIX 3: Chunked transcription for large uploaded files ─────────────────
+  // Live recordings are capped at 64 kbps (see useAudioRecorder.ts) so a 10-min
+  // session is ~4.8 MB — well under the 25 MB limit. Chunking here is a safety
+  // net for uploaded pre-existing files that exceed the limit.
+  if (file.size > INLINE_LIMIT_BYTES_GROQ) {
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE_BYTES);
+    onProgress(
+      'Transcribing',
+      `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — splitting into ${totalChunks} chunks...`
+    );
+
+    const parts: string[] = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const start     = i * CHUNK_SIZE_BYTES;
+      const end       = Math.min(start + CHUNK_SIZE_BYTES, file.size);
+      const chunkBlob = file.slice(start, end);
+      const label     = `chunk-${i + 1}-of-${totalChunks}.webm`;
+
+      onProgress(
+        'Transcribing',
+        `Chunk ${i + 1} / ${totalChunks} — ${(chunkBlob.size / 1024 / 1024).toFixed(1)} MB...`
+      );
+
+      // Approximate timestamp offset based on byte position within the file
+      const approxDuration = file.size / (64_000 / 8); // estimate at 64 kbps
+      const offsetSeconds  = Math.round((start / file.size) * approxDuration);
+
+      try {
+        const data = await transcribeBlob(chunkBlob, mimeType, label, apiKey, model, promptHint);
+        parts.push(formatSegments(data, offsetSeconds, names));
+      } catch (err: any) {
+        const { message } = classifyGroqError(err);
+        throw new Error(`Chunk ${i + 1}/${totalChunks} failed: ${message}`);
+      }
+    }
+
+    return parts.filter(Boolean).join('\n');
   }
 
-  return data.text ?? '';
+  // ── Single-shot transcription (file ≤ 25 MB) ─────────────────────────────
+  onProgress('Transcribing', `Sending to Groq Whisper (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+
+  const data = await transcribeBlob(file, mimeType, file.name, apiKey, model, promptHint).catch(err => {
+    const { message } = classifyGroqError(err);
+    throw new Error(message);
+  });
+
+  return formatSegments(data, 0, names);
 }

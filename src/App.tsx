@@ -5,16 +5,27 @@ import { ProcessingState} from '@/components/ProcessingState';
 import { TranscriptView } from '@/components/TranscriptView';
 import { SettingsPanel }  from '@/components/SettingsPanel';
 import { loadConfig }     from '@/services/config';
-import { transcribe }           from '@/services/transcription';
+import { transcribe }     from '@/services/transcription';
 import type { AppState, MeetingContext } from '@/types';
 
+/** Trigger a browser download of a File/Blob object. */
+function downloadFile(file: File | Blob, filename: string) {
+  const url = URL.createObjectURL(file);
+  const a   = document.createElement('a');
+  a.href     = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2_000);
+}
+
 export default function App() {
-  // null = loading check; true/false = config present or not
-  const [configured,    setConfigured]    = useState<boolean>(() => !!loadConfig());
-  const [appState,      setAppState]      = useState<AppState>({ status: 'idle' });
-  const [stage,         setStage]         = useState('');
-  const [detail,        setDetail]        = useState('');
-  const [showSettings,  setShowSettings]  = useState(false);
+  const [configured,   setConfigured  ] = useState<boolean>(() => !!loadConfig());
+  const [appState,     setAppState    ] = useState<AppState>({ status: 'idle' });
+  const [stage,        setStage       ] = useState('');
+  const [detail,       setDetail      ] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
 
   const handleTranscribe = useCallback(async (file: File, context: MeetingContext) => {
     const config = loadConfig();
@@ -34,9 +45,12 @@ export default function App() {
       setAppState({ status: 'success', transcript, fileName: file.name });
     } catch (err: any) {
       setAppState({
-        status: 'error',
-        error:    err.message || 'Transcription failed. Please try again.',
-        fileName: file.name,
+        status:     'error',
+        error:      err.message || 'Transcription failed. Please try again.',
+        fileName:   file.name,
+        // Store the original file so the error panel can offer a download fallback.
+        // This ensures a live recording is never lost even when the API call fails.
+        sourceFile: file,
       });
     }
   }, []);
@@ -47,7 +61,7 @@ export default function App() {
     setDetail('');
   }, []);
 
-  // ── First-run / key-change setup screen ────────────────────────────────────
+  // ── First-run / key-change setup screen ──────────────────────────────────
   if (!configured) {
     return <ApiKeySetup onConfigured={() => setConfigured(true)} />;
   }
@@ -55,7 +69,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-surface-50 flex flex-col">
 
-      {/* ── Top nav ──────────────────────────────────────────────────────────── */}
+      {/* ── Top nav ────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur border-b border-slate-200">
         <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -95,10 +109,10 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Main content ─────────────────────────────────────────────────────── */}
+      {/* ── Main content ───────────────────────────────────────────────────── */}
       <main className="flex-1 flex flex-col items-center justify-start px-4 py-10">
 
-        {/* ── Idle: show upload / record UI ─────────────────────────────────── */}
+        {/* ── Idle: upload / record UI ───────────────────────────────────── */}
         {appState.status === 'idle' && (
           <div className="w-full max-w-2xl">
             <div className="text-center mb-8">
@@ -111,7 +125,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Processing ────────────────────────────────────────────────────── */}
+        {/* ── Processing ────────────────────────────────────────────────── */}
         {appState.status === 'processing' && (
           <div className="w-full max-w-md">
             <div className="text-center mb-8">
@@ -124,7 +138,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Success ───────────────────────────────────────────────────────── */}
+        {/* ── Success ───────────────────────────────────────────────────── */}
         {appState.status === 'success' && appState.transcript && (
           <TranscriptView
             transcript={appState.transcript}
@@ -133,7 +147,7 @@ export default function App() {
           />
         )}
 
-        {/* ── Error ─────────────────────────────────────────────────────────── */}
+        {/* ── Error ─────────────────────────────────────────────────────── */}
         {appState.status === 'error' && (
           <div className="w-full max-w-lg animate-slide-up">
             <div className="bg-white rounded-2xl border border-red-100 shadow-sm p-8 text-center">
@@ -147,6 +161,37 @@ export default function App() {
               <p className="text-red-600 text-sm leading-relaxed whitespace-pre-line text-left bg-red-50 rounded-xl p-4 mb-6">
                 {appState.error}
               </p>
+
+              {/* ── Download fallback — always shown when the source file is available ── */}
+              {appState.sourceFile && (
+                <div className="mb-5 p-4 bg-amber-50 rounded-xl border border-amber-200 text-left">
+                  <p className="text-sm font-semibold text-amber-800 mb-1">
+                    Your recording is safe
+                  </p>
+                  <p className="text-xs text-amber-700 mb-3">
+                    The transcription failed, but your audio was captured successfully.
+                    Download it now so you don't lose it, then retry or upload it manually.
+                  </p>
+                  <button
+                    onClick={() => {
+                      const f = appState.sourceFile!;
+                      // Use the original file name, falling back to a timestamped name
+                      const name = f.name.startsWith('recording-')
+                        ? f.name
+                        : `recording-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+                      downloadFile(f, name);
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold rounded-xl transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download Recording
+                  </button>
+                </div>
+              )}
+
               <div className="flex gap-3 justify-center">
                 <button
                   onClick={handleReset}
@@ -166,12 +211,12 @@ export default function App() {
         )}
       </main>
 
-      {/* ── Footer ───────────────────────────────────────────────────────────── */}
+      {/* ── Footer ─────────────────────────────────────────────────────────── */}
       <footer className="text-center text-xs text-slate-400 py-4 border-t border-slate-100">
         Voice Transcriber · BYOK · Your API key never leaves your browser
       </footer>
 
-      {/* ── Settings overlay ─────────────────────────────────────────────────── */}
+      {/* ── Settings overlay ───────────────────────────────────────────────── */}
       {showSettings && (
         <SettingsPanel
           onClose={() => setShowSettings(false)}

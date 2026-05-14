@@ -6,21 +6,48 @@
  * This module is stateless — it never stores, logs, or forwards the key.
  *
  * File handling strategy:
- *   ≤ 20 MB  →  inline base64 in the generateContent request (fast, simple)
- *   > 20 MB  →  Gemini File API upload → poll until ACTIVE → reference by URI
- *              (File API supports up to 2 GB per file, files auto-delete in 48 h)
+ * ≤ 15 MB → inline base64 in the generateContent request (fast, simple)
+ *           (15 MB raw → ~20 MB base64 — stays within Gemini's 20 MB request limit)
+ * > 15 MB → Gemini File API upload → poll until ACTIVE → reference by URI
+ *           (File API supports up to 2 GB per file, files auto-delete in 48 h)
+ *
+ * ── FIXES IN THIS VERSION ────────────────────────────────────────────────────
+ * FIX 1 — INLINE_LIMIT_BYTES 20 MB → 15 MB
+ *   A 20 MB audio file encodes to ~27 MB of base64. Gemini's request body
+ *   limit is 20 MB, so files between ~14–20 MB caused silent 413 failures.
+ *   15 MB → ~20 MB base64 is the correct safe ceiling.
+ *
+ * FIX 2 — normalizeMimeType() strips codec parameters
+ *   MediaRecorder sets file.type = "audio/webm;codecs=opus". Passing this to
+ *   Gemini's File API or inlineData returns a 400 "unsupported MIME type".
+ *   We strip everything after the first semicolon: "audio/webm;codecs=opus"
+ *   → "audio/webm".
+ *
+ * FIX 3 — Promise.race() timeouts on upload AND generateContent
+ *   Without a timeout the UI hangs forever when the network stalls or Gemini
+ *   is slow to respond. Both operations now have hard upper bounds so users
+ *   get a clear error rather than an infinite spinner.
  */
 
 import { GoogleGenAI } from '@google/genai';
 import type { MeetingContext } from '@/types';
 
 // ── Tunables ──────────────────────────────────────────────────────────────────
-const INLINE_LIMIT_BYTES  = 20 * 1024 * 1024; // 20 MB
-const POLL_INTERVAL_MS    = 3_000;
-const MAX_POLL_ATTEMPTS   = 120;               // 120 × 3 s = 6 min max
-const MAX_RETRIES         = 3;
-const RETRY_BASE_MS       = 3_000;
-const RATE_LIMIT_WAIT_MS  = 65_000;
+/**
+ * Safe ceiling for inline base64 uploads.
+ * 15 MB raw → ~20 MB base64, which sits at Gemini's request body limit.
+ * Anything larger goes through the File API instead.
+ */
+const INLINE_LIMIT_BYTES   = 15 * 1024 * 1024; // 15 MB  (was 20 MB — see FIX 1)
+const POLL_INTERVAL_MS     = 3_000;
+const MAX_POLL_ATTEMPTS    = 120;               // 120 × 3 s = 6 min max
+const MAX_RETRIES          = 3;
+const RETRY_BASE_MS        = 3_000;
+const RATE_LIMIT_WAIT_MS   = 65_000;
+/** Timeout for the entire File API upload + polling phase. */
+const UPLOAD_TIMEOUT_MS    = 10 * 60 * 1_000;  // 10 minutes
+/** Timeout for the generateContent call. */
+const GENERATE_TIMEOUT_MS  = 12 * 60 * 1_000;  // 12 minutes
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Known Gemini models that support audio input */
@@ -36,35 +63,52 @@ export const AUDIO_CAPABLE_MODELS = [
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
 
-// ── Transcription prompt ──────────────────────────────────────────────────────
+// ── MIME type normalisation ───────────────────────────────────────────────────
 
 /**
- * Builds the transcription prompt.
+ * Strip codec / parameter suffixes that the Gemini API does not accept.
  *
- * Speaker identification quality ranking (best → worst):
- *   1. Host name + participant list provided  → Gemini matches voices to real names
- *   2. Host name only                         → Host is labelled, others are Speaker B/C...
- *   3. No names provided                      → Everyone is Speaker A/B/C...
+ * MediaRecorder sets file.type to strings like:
+ *   "audio/webm;codecs=opus"  →  "audio/webm"
+ *   "audio/ogg;codecs=opus"   →  "audio/ogg"
  *
- * Gemini uses three signals to assign names:
- *   a) Explicit mentions ("Thanks, Sarah" / "I agree, John")
- *   b) Audio channel: if stereo, left channel = recorder's mic = host
- *   c) Voice consistency: once a voice is matched to a name, it stays matched
+ * Passing the full codec string to Gemini's File API or inlineData causes a
+ * 400 "Invalid MIME type" error that manifests as a silent transcription failure.
  */
+function normalizeMimeType(type: string): string {
+  const base = (type || 'audio/webm').split(';')[0].trim();
+  return base || 'audio/webm';
+}
+
+/** Rejects after `ms` milliseconds with a user-friendly timeout message. */
+function timeoutAfter(ms: number, label: string): Promise<never> {
+  return new Promise((_, reject) =>
+    setTimeout(
+      () => reject(new Error(
+        `${label} timed out after ${Math.round(ms / 60_000)} minutes. ` +
+        `This can happen with very large files or a slow connection. ` +
+        `Try a shorter/smaller recording, or check your network and retry.`
+      )),
+      ms
+    )
+  );
+}
+
+// ── Transcription prompt ──────────────────────────────────────────────────────
+
 export function buildTranscriptionPrompt(ctx?: MeetingContext): string {
   const hasHost         = !!(ctx?.hostName?.trim());
   const hasParticipants = !!(ctx?.participants?.length);
   const allNames        = [
-    ...(hasHost         ? [ctx!.hostName.trim()]                         : []),
+    ...(hasHost         ? [ctx!.hostName.trim()]                                           : []),
     ...(hasParticipants ? ctx!.participants.map(p => p.trim()).filter(Boolean) : []),
   ];
 
-  // ── Participant context block ──────────────────────────────────────────────
   let participantBlock = '';
   if (allNames.length > 0) {
     participantBlock = `
 MEETING PARTICIPANTS (use these names to label speakers):
-${hasHost ? `• HOST / RECORDER: "${ctx!.hostName.trim()}" — this person's voice comes from the primary microphone (left audio channel in stereo recordings). Every voice on that channel belongs to them.` : ''}
+${hasHost         ? `• HOST / RECORDER: "${ctx!.hostName.trim()}" — this person's voice comes from the primary microphone (left audio channel in stereo recordings). Every voice on that channel belongs to them.` : ''}
 ${hasParticipants ? `• OTHER PARTICIPANTS: ${ctx!.participants.filter(p => p.trim()).map(p => `"${p.trim()}"`).join(', ')} — their voices come through the system/speaker audio (right channel or mixed channel).` : ''}
 ${ctx?.meetingTitle ? `• MEETING TITLE: "${ctx.meetingTitle}"` : ''}
 
@@ -108,7 +152,7 @@ If the audio contains no detectable speech, output exactly:
 [No speech detected — please check your audio file and try again.]`;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Internal helpers ──────────────────────────────────────────────────────────
 
 function sleep(ms: number) {
   return new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -126,8 +170,8 @@ interface ErrorInfo {
 }
 
 export function classifyError(err: unknown): ErrorInfo {
-  const raw   = String((err as any)?.message ?? (err as any)?.toString() ?? '');
-  const lower = raw.toLowerCase();
+  const raw    = String((err as any)?.message ?? (err as any)?.toString() ?? '');
+  const lower  = raw.toLowerCase();
   const status = (err as any)?.status ?? (err as any)?.statusCode ?? extractHttpStatus(raw);
 
   if (status === 429 || lower.includes('resource_exhausted') || raw.includes('429')) {
@@ -180,14 +224,19 @@ export function classifyError(err: unknown): ErrorInfo {
     return { message: 'Gemini internal error. Retrying...', retryable: true };
   }
 
+  // Timeout errors (thrown by timeoutAfter above) are retryable
+  if (lower.includes('timed out')) {
+    return { message: raw, retryable: true };
+  }
+
   return { message: raw || 'Transcription failed. Please try again.', retryable: true };
 }
 
 /** Read a File as a base64 string (strips the data: URI prefix). */
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
+    const reader   = new FileReader();
+    reader.onload  = () => {
       const result = reader.result as string;
       resolve(result.includes(',') ? result.split(',')[1] : result);
     };
@@ -196,7 +245,7 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-// ── Validate API key (browser → Google directly) ──────────────────────────────
+// ── Validate API key ──────────────────────────────────────────────────────────
 
 export async function validateGeminiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
   try {
@@ -211,7 +260,7 @@ export async function validateGeminiKey(apiKey: string): Promise<{ valid: boolea
   }
 }
 
-// ── Fetch available models (browser → Google directly) ────────────────────────
+// ── Fetch available models ────────────────────────────────────────────────────
 
 export async function fetchGeminiModels(apiKey: string) {
   const res = await fetch(
@@ -221,7 +270,7 @@ export async function fetchGeminiModels(apiKey: string) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error?.message || 'Failed to fetch models');
   }
-  const data = await res.json();
+  const data     = await res.json();
   const audioSet = new Set(AUDIO_CAPABLE_MODELS);
 
   const capable = (data.models ?? []).filter((m: any) => {
@@ -259,6 +308,10 @@ export async function transcribeWithGemini(
 ): Promise<string> {
   const ai = new GoogleGenAI({ apiKey });
 
+  // FIX 2: Normalise the MIME type — strip codec parameters the API rejects.
+  // e.g. "audio/webm;codecs=opus" → "audio/webm"
+  const mimeType = normalizeMimeType(file.type);
+
   // ── Step 1: prepare audio part ────────────────────────────────────────────
   let audioPart: Record<string, unknown>;
 
@@ -273,14 +326,18 @@ export async function transcribeWithGemini(
       try {
         if (attempt > 1) onProgress('Retrying upload', `Attempt ${attempt}/${MAX_RETRIES}...`);
 
-        const uploaded = await ai.files.upload({
-          file,
-          config: { mimeType: file.type || 'audio/webm', displayName: file.name },
-        });
+        // FIX 3: Race the upload against a hard timeout.
+        const uploaded = await Promise.race([
+          ai.files.upload({
+            file,
+            config: { mimeType, displayName: file.name },
+          }),
+          timeoutAfter(UPLOAD_TIMEOUT_MS, 'File upload'),
+        ]);
 
         // Poll until ACTIVE
         let fileInfo: any = uploaded;
-        let polls = 0;
+        let polls         = 0;
         while (
           (fileInfo.state === 'PROCESSING' || !fileInfo.state) &&
           polls < MAX_POLL_ATTEMPTS
@@ -298,8 +355,9 @@ export async function transcribeWithGemini(
           throw new Error(`File upload stalled: state=${fileInfo.state} after ${polls} polls`);
         }
 
-        onProgress('Upload complete', `File ready (${fileInfo.uri})`);
-        uploadedRef = { fileData: { fileUri: fileInfo.uri, mimeType: fileInfo.mimeType || file.type } };
+        onProgress('Upload complete', `File ready — starting transcription...`);
+        // Use our normalised mimeType; don't echo back whatever the API returned
+        uploadedRef = { fileData: { fileUri: fileInfo.uri, mimeType } };
         break;
       } catch (err) {
         lastErr = err;
@@ -313,30 +371,35 @@ export async function transcribeWithGemini(
     if (!uploadedRef) throw new Error(classifyError(lastErr).message);
     audioPart = uploadedRef;
   } else {
-    // Small file → inline base64
+    // Small file → inline base64 (FIX 1: safe threshold of 15 MB)
     onProgress('Preparing', `Encoding ${(file.size / 1024 / 1024).toFixed(1)} MB inline...`);
     const base64 = await fileToBase64(file);
-    audioPart    = { inlineData: { mimeType: file.type || 'audio/webm', data: base64 } };
+    audioPart    = { inlineData: { mimeType, data: base64 } };
     onProgress('Ready', 'Audio encoded — sending to Gemini...');
   }
 
   // ── Step 2: transcribe ────────────────────────────────────────────────────
-  onProgress('Transcribing', 'Waiting for Gemini response (may take a minute for long recordings)...');
+  onProgress('Transcribing', 'Waiting for Gemini response (may take a few minutes for long recordings)...');
 
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       if (attempt > 1) onProgress('Retrying', `Attempt ${attempt}/${MAX_RETRIES}...`);
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: [{
-          role:  'user',
-          parts: [audioPart as any, { text: buildTranscriptionPrompt(context) }],
-        }],
-      });
+      // FIX 3: Race generateContent against a hard timeout.
+      // Without this, a stalled Gemini response hangs the UI indefinitely.
+      const response = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: [{
+            role:  'user',
+            parts: [audioPart as any, { text: buildTranscriptionPrompt(context) }],
+          }],
+        }),
+        timeoutAfter(GENERATE_TIMEOUT_MS, 'Transcription request'),
+      ]);
 
-      const text = response?.text;
+      const text = (response as any)?.text;
       if (!text) throw new Error('Gemini returned an empty response. Please try again.');
       return text;
     } catch (err) {

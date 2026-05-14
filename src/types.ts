@@ -36,6 +36,12 @@ export interface AppState {
   error?: string;
   /** File name shown in the result header */
   fileName?: string;
+  /**
+   * The original File that was being transcribed when an error occurred.
+   * Stored so the error panel can offer a "Download Recording" fallback button,
+   * ensuring users never lose their audio even when the API call fails.
+   */
+  sourceFile?: File;
 }
 
 // ── Audio recording ───────────────────────────────────────────────────────────

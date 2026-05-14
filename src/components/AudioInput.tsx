@@ -286,10 +286,22 @@ export function AudioInput({ onTranscribe, disabled }: Props) {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-green-800">Recording ready</p>
                 <p className="text-xs text-green-600">{formatBytes(recordedFile.size)} · {recordedFile.name}</p>
               </div>
+              {/* Download backup — save the audio before sending to the API */}
+              <button
+                onClick={() => recorder.downloadAudio(recordedFile.name)}
+                title="Download a backup copy of your recording"
+                className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 bg-white border border-green-300 text-green-700 hover:bg-green-100 text-xs font-semibold rounded-lg transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Save
+              </button>
             </div>
           )}
 

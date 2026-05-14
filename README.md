@@ -10,6 +10,7 @@ A purely client-side React app that transcribes meeting audio using your own AI 
 - **Speaker identification** — enter participant names upfront; Gemini and GPT-4o Audio label speakers by real name instead of "Speaker A / Speaker B"
 - **Timestamped output** — every speaker turn is timestamped `[HH:MM:SS]`
 - **Export** — copy to clipboard, download as `.txt`, or download as `.md`
+- **Audio download fallback** — if transcription ever fails, your recording is always available to download so it is never lost
 - **Render-ready** — deploys as a static site with zero server cost
 
 ## Supported providers
@@ -18,8 +19,8 @@ A purely client-side React app that transcribes meeting audio using your own AI 
 |----------|----------|-----------|----------|-----------|
 | **Google Gemini** | Long meetings, best quality | Full (names) | 2 GB | Yes |
 | **OpenAI** (GPT-4o Audio) | Existing OpenAI users, full speaker ID | Full (names) | 25 MB | No |
-| **OpenAI** (Whisper-1) | Speed, cost | Plain transcript | 25 MB | No |
-| **Groq** (Whisper) | Fast, free, English meetings | Names as spelling hint | 25 MB | Yes |
+| **OpenAI** (Whisper-1) | Speed, cost; chunked for large files | Plain transcript | 500 MB* | No |
+| **Groq** (Whisper) | Fast, free, English meetings; chunked for large files | Names as spelling hint | 500 MB* | Yes |
 
 ### Getting an API key
 
@@ -31,7 +32,9 @@ A purely client-side React app that transcribes meeting audio using your own AI 
 
 ## Supported file formats
 
-MP3 · WAV · WebM · OGG · M4A · AAC · FLAC · MP4 · MOV · AVI — up to **500 MB** (Gemini supports up to 2 GB via its File API; OpenAI and Groq are limited to 25 MB)
+MP3 · WAV · WebM · OGG · M4A · AAC · FLAC · MP4 · MOV · AVI — up to **500 MB** (Gemini supports up to 2 GB via its File API; OpenAI and Groq chunk files above 25 MB automatically)
+
+> **Note for live recordings:** The recorder captures at 64 kbps Opus, so a 10-minute meeting is ~4.8 MB — well within every provider's limit.
 
 ## How to run locally
 
@@ -104,14 +107,14 @@ voice-transcriber/
 │   │   ├── SettingsPanel.tsx     # Change provider/model at any time
 │   │   └── TranscriptView.tsx    # Display, copy, and export transcript
 │   ├── hooks/
-│   │   └── useAudioRecorder.ts   # Mic + system audio capture via MediaRecorder
+│   │   └── useAudioRecorder.ts   # Mic + system audio capture via MediaRecorder (64 kbps cap)
 │   ├── services/
 │   │   ├── config.ts             # localStorage read/write for stored config
 │   │   └── transcription/
 │   │       ├── index.ts          # Provider-agnostic router + PROVIDERS metadata
-│   │       ├── gemini.ts         # Google Gemini — inline base64 + File API for >20 MB
-│   │       ├── openai.ts         # OpenAI — GPT-4o Audio + Whisper-1
-│   │       └── groq.ts           # Groq — Whisper via OpenAI-compatible API
+│   │       ├── gemini.ts         # Google Gemini — inline base64 (≤15 MB) + File API (>15 MB)
+│   │       ├── openai.ts         # OpenAI — GPT-4o Audio + Whisper-1 (with chunking >25 MB)
+│   │       └── groq.ts           # Groq — Whisper via OpenAI-compatible API (with chunking >25 MB)
 │   ├── types.ts                  # Shared TypeScript types
 │   ├── App.tsx                   # Root state machine (idle → processing → success/error)
 │   └── main.tsx                  # React entry point
@@ -155,9 +158,57 @@ npm test
 # Tests      165 passed (165)
 ```
 
+## Reliability fixes (May 2025)
+
+These changes resolved a consistent failure where 10-minute meeting recordings failed to transcribe across all providers.
+
+### Fix 1 — MIME type codec suffix rejected by every provider API
+**Files:** `gemini.ts`, `groq.ts`, `openai.ts`
+
+`MediaRecorder` sets `file.type = "audio/webm;codecs=opus"`. All three provider APIs reject the `;codecs=opus` suffix with a 400 error, surfacing as a generic "Transcription failed."
+
+**Fix:** Added `normalizeMimeType()` in all three providers to strip the suffix before any API call: `"audio/webm;codecs=opus"` → `"audio/webm"`.
+
+### Fix 2 — Gemini inline base64 threshold was too high
+**File:** `gemini.ts`
+
+`INLINE_LIMIT_BYTES` was 20 MB, but a 20 MB file encodes to ~27 MB of base64 — over Gemini's 20 MB request body limit. Files between ~14–20 MB consistently produced silent HTTP 413 failures.
+
+**Fix:** `INLINE_LIMIT_BYTES` lowered from 20 MB → **15 MB** (15 MB → ~20 MB base64, within the limit). Files above 15 MB now route through the File API.
+
+### Fix 3 — No timeouts on API calls
+**Files:** `gemini.ts`, `groq.ts`, `openai.ts`
+
+A stalled connection or slow Gemini response hung the UI forever with no feedback.
+
+**Fix:** `Promise.race([apiCall, timeoutAfter(N)])` added to all network calls — Gemini upload: 10 min, `generateContent`: 12 min, Groq/OpenAI: 5–8 min. Users now get a clear error instead of an infinite spinner.
+
+### Fix 4 — No bitrate cap on MediaRecorder
+**File:** `useAudioRecorder.ts`
+
+Chrome records at 128–256 kbps by default. At 256 kbps a 10-minute recording is ~19 MB — at the edge of Gemini's inline limit and over Groq/OpenAI's 25 MB hard limit around 16 minutes.
+
+**Fix:** Added `audioBitsPerSecond: 64_000` to `MediaRecorder`. At 64 kbps Opus stereo: 10 min = **~4.8 MB** (well within all limits); 60 min = ~28.8 MB (routes through Gemini File API).
+
+### Fix 5 — Recorded audio permanently lost on transcription failure
+**Files:** `useAudioRecorder.ts`, `App.tsx`, `AudioInput.tsx`, `types.ts`
+
+When the API call failed, the audio `Blob` was discarded with the error state.
+
+**Fix (three layers):** `useAudioRecorder.ts` exposes `downloadAudio()` backed by a ref that survives `cleanup()`; `AudioInput.tsx` shows a **"Save"** button next to each completed recording; `App.tsx` stores `sourceFile` in error state and shows a **"Download Recording"** fallback panel on failure.
+
+### Fix 6 — No chunking for Groq/OpenAI files > 25 MB
+**Files:** `groq.ts`, `openai.ts`
+
+Large uploaded files previously threw an immediate error for Groq and Whisper-1 with no recovery.
+
+**Fix:** Both providers now split files into 23 MB chunks via `Blob.slice()`, transcribe each independently, and concatenate results. Live recordings are unaffected by Fix 4 (64 kbps cap keeps them well under 25 MB).
+
+---
+
 ## Roadmap
 
 - [ ] **Project 2 — Meeting Notes Generator**: takes a transcript produced by this app and generates structured meeting notes (summary, action items, decisions, follow-ups) using the same BYOK pattern
 - [ ] AssemblyAI provider (async transcription, native speaker diarization)
-- [ ] OpenAI Whisper large file support (chunking workaround for >25 MB)
+- [x] ~~OpenAI / Groq Whisper large file support (chunking workaround for >25 MB)~~ — shipped May 2025
 - [ ] In-browser transcript editing before export
