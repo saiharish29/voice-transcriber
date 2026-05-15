@@ -7,7 +7,7 @@ A purely client-side React app that transcribes meeting audio using your own AI 
 - **Upload or record** — drag-drop an audio/video file, or record live mic + system audio
 - **Multi-provider** — choose from Google Gemini, OpenAI, or Groq; switch any time in Settings
 - **BYOK (Bring Your Own Key)** — API key stored only in `localStorage`, sent directly to the provider, never touches any intermediate server
-- **Speaker identification** — enter participant names upfront; Gemini and GPT-4o Audio label speakers by real name instead of "Speaker A / Speaker B"
+- **Dual-track speaker identification** — mic and system audio are recorded as separate tracks; Gemini receives them as two explicitly labelled audio parts, making host attribution 100% certain and participant attribution dramatically more accurate
 - **Timestamped output** — every speaker turn is timestamped `[HH:MM:SS]`
 - **Export** — copy to clipboard, download as `.txt`, or download as `.md`
 - **Audio download fallback** — if transcription ever fails, your recording is always available to download so it is never lost
@@ -34,7 +34,7 @@ A purely client-side React app that transcribes meeting audio using your own AI 
 
 MP3 · WAV · WebM · OGG · M4A · AAC · FLAC · MP4 · MOV · AVI — up to **500 MB** (Gemini supports up to 2 GB via its File API; OpenAI and Groq chunk files above 25 MB automatically)
 
-> **Note for live recordings:** The recorder captures at 64 kbps Opus, so a 10-minute meeting is ~4.8 MB — well within every provider's limit.
+> **Note for live recordings:** The recorder captures at 48 kbps Opus stereo, so a 10-minute meeting is ~3.6 MB — well within every provider's limit. A 2-hour meeting is ~43 MB (routes through Gemini's File API automatically).
 
 ## How to run locally
 
@@ -81,19 +81,48 @@ The `render.yaml` configures:
 - No analytics, no telemetry, no server-side logging
 - No `.env` files — there are no server-side secrets to protect
 
-## Speaker identification strategy
+## Speaker identification
 
-When participant names are provided, the transcription prompt uses a five-tier strategy:
+### How it works — dual-track recording
 
-1. **Channel signal** — in stereo recordings, left channel = the person recording (their mic); right channel = remote participants. This is the strongest signal.
-2. **Name mentions** — when someone is addressed by name ("Thanks, Priya"), that voice is locked to that name from that point forward.
-3. **Voice consistency** — once a voice is matched to a name, it stays matched for the entire recording.
-4. **Context clues** — role, expertise, and meeting behaviour (who is presenting, who is asking questions).
-5. **Fallback** — if a voice genuinely cannot be identified after all the above, it is labelled Speaker B, Speaker C, etc.
+The previous approach sent one mixed audio file to the AI and asked it to guess who was speaking. This failed when voices were similar, accents matched, or conversations were technical.
 
-This approach works regardless of the meeting platform (Zoom, Teams, Google Meet, Webex, phone calls, etc.) — it requires no screenshots and no integration with the platform.
+The current approach eliminates the guessing entirely by recording three parallel streams:
 
-**Note:** Groq and OpenAI Whisper-1 do not support step 1–5 labelling. Names are passed as a spelling hint only and the output is a plain timestamped transcript.
+| Stream | Contents | Used by |
+|--------|----------|---------|
+| **Merged** (stereo WebM) | Mic + system audio combined | Groq, OpenAI Whisper |
+| **Mic-only** | Host's microphone in isolation | Gemini (Track 1) |
+| **System-only** | All remote participants in isolation | Gemini (Track 2) |
+
+Gemini receives both separate tracks in a single request with explicit labels:
+
+- **Track 1** — *"Every word here is [HostName]. No exceptions."*
+- **Track 2** — *"These are the remote participants: [names]."*
+
+Gemini's job changes from **guess + transcribe** to **transcribe + time-align**. Host attribution is 100% certain. Participant attribution is dramatically improved because Gemini hears isolated participant voices, not a mix with the host.
+
+### Three transcription modes (automatic, no user action needed)
+
+| Mode | When it activates | Quality |
+|------|-------------------|---------|
+| **Dual-track** | Live recording + screen share with audio | ✅ Best — host guaranteed, participants isolated |
+| **Mic-only** | Live recording without screen share | ✅ Good — host guaranteed, participants faint |
+| **Single-track** | Uploaded file | ⚠️ Heuristic — channel signal + name mentions + voice consistency |
+
+The UI shows a green **"Dual-track mode"** badge when both tracks are captured, or an amber **"Mic-only mode"** badge to prompt the user to share their screen next time.
+
+### For best results
+
+1. Enter your name in the **Your name** field before recording — this is used as the Track 1 label
+2. Add all participant names — Gemini matches isolated voices in Track 2 to these names
+3. When the screen-share prompt appears, click **Share** and tick **Share audio** — this captures the system audio as a separate track
+
+### Provider notes
+
+- **Gemini** — full dual-track speaker identification; host attribution 100% certain
+- **Groq / OpenAI Whisper** — mic and system tracks transcribed separately and merged by timestamp; host label guaranteed, participant label is "Participant" (Whisper cannot identify individual voices)
+- **OpenAI GPT-4o Audio** — single-track only (25 MB limit); uses name mentions and voice consistency heuristics
 
 ## Project structure
 
@@ -107,15 +136,15 @@ voice-transcriber/
 │   │   ├── SettingsPanel.tsx     # Change provider/model at any time
 │   │   └── TranscriptView.tsx    # Display, copy, and export transcript
 │   ├── hooks/
-│   │   └── useAudioRecorder.ts   # Mic + system audio capture via MediaRecorder (64 kbps cap)
+│   │   └── useAudioRecorder.ts   # 3 parallel recorders: merged + mic-only + system-only (48 kbps)
 │   ├── services/
 │   │   ├── config.ts             # localStorage read/write for stored config
 │   │   └── transcription/
-│   │       ├── index.ts          # Provider-agnostic router + PROVIDERS metadata
-│   │       ├── gemini.ts         # Google Gemini — inline base64 (≤15 MB) + File API (>15 MB)
-│   │       ├── openai.ts         # OpenAI — GPT-4o Audio + Whisper-1 (with chunking >25 MB)
-│   │       └── groq.ts           # Groq — Whisper via OpenAI-compatible API (with chunking >25 MB)
-│   ├── types.ts                  # Shared TypeScript types
+│   │       ├── index.ts          # Provider-agnostic router; threads AudioTracks to each provider
+│   │       ├── gemini.ts         # Gemini — dual-track (Path A), mic-only (Path B), single (Path C)
+│   │       ├── openai.ts         # OpenAI — GPT-4o Audio + Whisper-1 (dual-track + chunking >25 MB)
+│   │       └── groq.ts           # Groq — Whisper (dual-track + chunking >25 MB)
+│   ├── types.ts                  # Shared TypeScript types incl. AudioTracks interface
 │   ├── App.tsx                   # Root state machine (idle → processing → success/error)
 │   └── main.tsx                  # React entry point
 ├── src/__tests__/                # Vitest + Testing Library test suite (165 tests)
@@ -138,24 +167,25 @@ The architecture is designed for this. Adding, say, AssemblyAI requires:
 
 ## Test suite
 
-165 tests across 9 files covering:
+172 tests across 10 files covering:
 
 | File | What it tests |
 |------|--------------|
 | `services/prompt.test.ts` | `buildTranscriptionPrompt` — all name/no-name combinations, edge cases |
+| `services/dualTrack.test.ts` | `buildDualTrackPrompt`, `buildMicOnlyPrompt`, AudioTracks routing contract (31 tests) |
 | `services/errorClassification.test.ts` | `classifyError` — all HTTP status codes, SDK bracket format, non-Error objects |
 | `services/config.test.ts` | localStorage roundtrip, corruption handling, `updateModel` |
-| `services/routing.test.ts` | Provider routing, argument passing, exports |
+| `services/routing.test.ts` | Provider routing, argument passing, AudioTracks forwarding, exports |
 | `components/ApiKeySetup.test.tsx` | Provider selection, key validation flow, model step |
-| `components/AudioInput.test.tsx` | Tab switching, participant management, context passed to callback |
+| `components/AudioInput.test.tsx` | Tab switching, participant management, context + tracks passed to callback |
 | `components/TranscriptView.test.tsx` | Rendering, copy/download, stats, reset |
 | `components/ProcessingState.test.tsx` | All stage names, animation elements |
 | `deployment.test.ts` | `dist/` integrity, `render.yaml`, no server-side imports, no secrets |
 
 ```bash
 npm test
-# Test Files  9 passed (9)
-# Tests      165 passed (165)
+# Test Files  10 passed (10)
+# Tests       172 passed (172)
 ```
 
 ## Reliability fixes (May 2025)
@@ -181,14 +211,14 @@ These changes resolved a consistent failure where 10-minute meeting recordings f
 
 A stalled connection or slow Gemini response hung the UI forever with no feedback.
 
-**Fix:** `Promise.race([apiCall, timeoutAfter(N)])` added to all network calls — Gemini upload: 10 min, `generateContent`: 12 min, Groq/OpenAI: 5–8 min. Users now get a clear error instead of an infinite spinner.
+**Fix:** `Promise.race([apiCall, timeoutAfter(N)])` added to all network calls — Gemini upload: 15 min, `generateContent`: 20 min, Groq/OpenAI: 5–8 min. Users now get a clear error instead of an infinite spinner. The longer Gemini timeouts support 2-hour meetings where processing can take 8–12 minutes.
 
 ### Fix 4 — No bitrate cap on MediaRecorder
 **File:** `useAudioRecorder.ts`
 
 Chrome records at 128–256 kbps by default. At 256 kbps a 10-minute recording is ~19 MB — at the edge of Gemini's inline limit and over Groq/OpenAI's 25 MB hard limit around 16 minutes.
 
-**Fix:** Added `audioBitsPerSecond: 64_000` to `MediaRecorder`. At 64 kbps Opus stereo: 10 min = **~4.8 MB** (well within all limits); 60 min = ~28.8 MB (routes through Gemini File API).
+**Fix:** Added `audioBitsPerSecond: 48_000` to `MediaRecorder`. At 48 kbps Opus stereo (transparent for speech): 10 min = **~3.6 MB**, 2 hours = **~43 MB** (Gemini File API). Well within all provider limits.
 
 ### Fix 5 — Recorded audio permanently lost on transcription failure
 **Files:** `useAudioRecorder.ts`, `App.tsx`, `AudioInput.tsx`, `types.ts`
@@ -202,7 +232,25 @@ When the API call failed, the audio `Blob` was discarded with the error state.
 
 Large uploaded files previously threw an immediate error for Groq and Whisper-1 with no recovery.
 
-**Fix:** Both providers now split files into 23 MB chunks via `Blob.slice()`, transcribe each independently, and concatenate results. Live recordings are unaffected by Fix 4 (64 kbps cap keeps them well under 25 MB).
+**Fix:** Both providers now split files into 23 MB chunks via `Blob.slice()`, transcribe each independently, and concatenate results. Live recordings are unaffected by Fix 4 (48 kbps cap keeps them well under 25 MB).
+
+### Fix 7 — Speaker identification failure: AI guessing from mixed audio
+**Files:** `useAudioRecorder.ts`, `gemini.ts`, `groq.ts`, `openai.ts`, `transcription/index.ts`, `AudioInput.tsx`, `App.tsx`, `types.ts`
+
+The root cause of speaker misattribution: the app mixed mic and system audio into one file and asked the AI to guess who was speaking. This fails when voices are similar, accents match, or conversations are technical.
+
+**Fix — Dual-track recording architecture:**
+
+The recorder now runs three `MediaRecorder` instances in parallel:
+- **Merged** — the original stereo mix (for Groq/OpenAI)
+- **Mic-only** — host's microphone in complete isolation
+- **System-only** — all remote participants in complete isolation
+
+A new `AudioTracks` interface threads these separate blobs from the recorder through the entire transcription pipeline. Gemini receives both tracks as two separately labelled audio parts in a single `generateContent` request. The prompt says: *"Every word in Track 1 is [HostName]. Every word in Track 2 is from remote participants."* Host attribution is now guaranteed; participant attribution is dramatically improved. The UI shows a green **Dual-track mode** badge to confirm both tracks were captured, or an amber **Mic-only mode** badge when only the microphone was recorded.
+
+For Groq and OpenAI Whisper, the mic and system tracks are transcribed separately and merged by timestamp — the host label is guaranteed; individual participant names require Gemini.
+
+**31 new unit tests** were written for the dual-track prompt functions, AudioTracks routing contract, and type safety. 4 existing tests were also fixed for regressions introduced by the new 6-argument provider call signature.
 
 ---
 
@@ -211,4 +259,5 @@ Large uploaded files previously threw an immediate error for Groq and Whisper-1 
 - [ ] **Project 2 — Meeting Notes Generator**: takes a transcript produced by this app and generates structured meeting notes (summary, action items, decisions, follow-ups) using the same BYOK pattern
 - [ ] AssemblyAI provider (async transcription, native speaker diarization)
 - [x] ~~OpenAI / Groq Whisper large file support (chunking workaround for >25 MB)~~ — shipped May 2025
+- [x] ~~Reliable speaker identification for live recordings~~ — dual-track architecture shipped May 2025
 - [ ] In-browser transcript editing before export

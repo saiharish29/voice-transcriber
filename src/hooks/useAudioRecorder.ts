@@ -1,50 +1,51 @@
 /**
- * useAudioRecorder.ts — Simplified audio recorder for Voice Transcriber.
+ * useAudioRecorder.ts — Dual-track audio recorder for Voice Transcriber.
  *
- * Captures:
- *   • Microphone (always asked)
- *   • System / tab audio (optional — obtained via getDisplayMedia)
+ * Captures three parallel streams from a single recording session:
+ *   1. merged  — mic + system audio mixed into one stereo WebM (existing behaviour)
+ *   2. micOnly — the host's microphone in isolation
+ *   3. sysOnly — system/speaker audio (all remote participants) in isolation
  *
- * Both channels are merged into a single stereo WebM/Opus blob that is
- * handed back to the caller and can be passed directly to the transcription
- * service — no server upload required.
+ * Why three streams?
+ * The merged blob is sent to providers that only accept a single file (Groq,
+ * OpenAI Whisper). The separate mic/system blobs are sent to Gemini as two
+ * explicitly labelled audio parts, which gives it an unambiguous answer to
+ * "who is speaking" — no guessing required.
  *
- * ── FIXES IN THIS VERSION ────────────────────────────────────────────────────
- * FIX 1 — audioBitsPerSecond: 64_000 added to MediaRecorder
- *   Without a bitrate cap, Chrome records stereo Opus at 128–256 kbps,
- *   producing a ~9–19 MB file per 10 minutes. At 256 kbps a 10-min recording
- *   is ~19 MB — right at the edge of Gemini's inline-base64 request limit and
- *   over 25 MB around 16 minutes. Capping at 64 kbps gives:
- *     10 min → ~4.8 MB  (easily under all provider limits)
- *     60 min → ~28.8 MB (uses Gemini File API — still works fine)
- *   Quality is imperceptible for speech at 64 kbps Opus stereo.
+ * ── Speaker identification architecture ──────────────────────────────────────
+ * Previous approach:  send one mixed file → ask Gemini to guess speakers.
+ *                     Fails when voices are similar or meeting is technical.
  *
- * FIX 2 — downloadAudio() method exposed in the hook's return value
- *   If transcription fails the recorded audio is NOT lost. The caller can
- *   invoke downloadAudio() at any time (even after stopRecording) to trigger
- *   a browser download of the raw WebM blob. This ensures users can always
- *   recover their recording even when the API call fails.
+ * New approach:       send TWO separate files with explicit labels:
+ *   Track 1 (micOnly)  → "Every word here is [HostName]. No exceptions."
+ *   Track 2 (sysOnly)  → "These are the remote participants."
+ *   Gemini's job is now to transcribe + time-align, not to guess identity.
  *
- * FIX 3 — lastChunksRef / lastMimeTypeRef persist chunks after cleanup()
- *   cleanup() now only clears the media hardware; it does NOT wipe the chunk
- *   data. This lets stopRecording assemble the blob AND lets downloadAudio()
- *   offer a fallback download after the recorder has been torn down.
+ * ── Other fixes retained from previous version ───────────────────────────────
+ * FIX 1 — audioBitsPerSecond: 48_000 caps file sizes (10 min ≈ 3.6 MB)
+ * FIX 2 — downloadAudio() fallback for data loss prevention
+ * FIX 3 — lastChunksRef persists through cleanup() for the fallback download
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { RecordingState, ChannelInfo } from '@/types';
 
 export interface RecordingResult {
+  /** Full stereo mix — used by all providers */
   audio: Blob;
   mimeType: string;
   durationSeconds: number;
+  /** Host mic only — used by Gemini for guaranteed host attribution */
+  micAudio?: Blob;
+  /** System/speaker audio only — used by Gemini for participant attribution */
+  systemAudio?: Blob;
 }
 
 interface UseAudioRecorderReturn {
   state: RecordingState;
-  duration: number;         // seconds elapsed
-  micLevel: number;         // 0–1
-  systemLevel: number;      // 0–1
+  duration: number;
+  micLevel: number;
+  systemLevel: number;
   channelInfo: ChannelInfo;
   error: string | null;
   startRecording: () => Promise<void>;
@@ -52,9 +53,7 @@ interface UseAudioRecorderReturn {
   pauseRecording: () => void;
   resumeRecording: () => void;
   cancelRecording: () => void;
-  /** FIX 2: Trigger a browser download of the current (or last) recording. */
   downloadAudio: (filename?: string) => void;
-  /** True when there is recorded audio available to download. */
   hasRecordedAudio: boolean;
 }
 
@@ -74,25 +73,33 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const audioCtxRef       = useRef<AudioContext | null>(null);
   const micAnalyserRef    = useRef<AnalyserNode | null>(null);
   const sysAnalyserRef    = useRef<AnalyserNode | null>(null);
-  const recorderRef       = useRef<MediaRecorder | null>(null);
+
+  // Three parallel recorders
+  const recorderRef       = useRef<MediaRecorder | null>(null); // merged
+  const micRecorderRef    = useRef<MediaRecorder | null>(null); // mic only
+  const sysRecorderRef    = useRef<MediaRecorder | null>(null); // system only
+
+  // Chunk buffers for each stream
   const chunksRef         = useRef<Blob[]>([]);
+  const micChunksRef      = useRef<Blob[]>([]);
+  const sysChunksRef      = useRef<Blob[]>([]);
+
+  // Persist last recording for fallback download
+  const lastChunksRef     = useRef<Blob[]>([]);
+  const lastMimeTypeRef   = useRef('audio/webm');
+
   const startTimeRef      = useRef(0);
   const timerRef          = useRef<number | null>(null);
   const levelFrameRef     = useRef<number | null>(null);
   const mimeTypeRef       = useRef('audio/webm');
 
-  // FIX 3: Keep a copy of chunks + mimeType that survives cleanup() so
-  // downloadAudio() works even after the recorder has been torn down.
-  const lastChunksRef     = useRef<Blob[]>([]);
-  const lastMimeTypeRef   = useRef('audio/webm');
-
   useEffect(() => () => { cleanupHardware(); }, []);
 
-  // ── Internal cleanup — only tears down media hardware ──────────────────────
+  // ── Hardware cleanup (does NOT wipe chunk data) ───────────────────────────
 
   const cleanupHardware = useCallback(() => {
-    if (timerRef.current)     { clearInterval(timerRef.current);         timerRef.current     = null; }
-    if (levelFrameRef.current){ cancelAnimationFrame(levelFrameRef.current); levelFrameRef.current = null; }
+    if (timerRef.current)      { clearInterval(timerRef.current);           timerRef.current      = null; }
+    if (levelFrameRef.current) { cancelAnimationFrame(levelFrameRef.current); levelFrameRef.current = null; }
 
     micStreamRef.current?.getTracks().forEach(t => t.stop());
     displayStreamRef.current?.getTracks().forEach(t => t.stop());
@@ -102,10 +109,13 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     if (audioCtxRef.current?.state !== 'closed') {
       audioCtxRef.current?.close().catch(() => {});
     }
-    audioCtxRef.current   = null;
+    audioCtxRef.current    = null;
     micAnalyserRef.current = null;
     sysAnalyserRef.current = null;
-    // NOTE: chunksRef is intentionally NOT cleared here (see FIX 3)
+    // Recorders are nulled here; chunks are intentionally preserved
+    recorderRef.current    = null;
+    micRecorderRef.current = null;
+    sysRecorderRef.current = null;
   }, []);
 
   // ── Level metering ────────────────────────────────────────────────────────
@@ -133,7 +143,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const startRecording = useCallback(async () => {
     cancelledRef.current  = false;
     chunksRef.current     = [];
-    lastChunksRef.current = []; // clear previous recording's fallback data
+    micChunksRef.current  = [];
+    sysChunksRef.current  = [];
+    lastChunksRef.current = [];
     setError(null);
     setDuration(0);
     setMicLevel(0);
@@ -158,31 +170,28 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       if (!cancelledRef.current) {
         try {
           const display = await navigator.mediaDevices.getDisplayMedia({
-            video: true,  // required by spec even if we only want audio
+            video: true,
             audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
           });
           if (cancelledRef.current) { display.getTracks().forEach(t => t.stop()); return; }
           displayStreamRef.current = display;
-
           display.getVideoTracks().forEach(t => t.stop());
-
           const audioTracks = display.getAudioTracks();
           if (audioTracks.length > 0) {
             systemAudio = new MediaStream(audioTracks);
           }
         } catch {
-          // User cancelled / browser doesn't support — proceed mic-only
+          // User cancelled or browser unsupported — proceed mic-only
         }
       }
 
       if (cancelledRef.current) return;
-
       if (!micStream && !systemAudio) {
         throw new Error('No audio source available. Please allow microphone access and try again.');
       }
 
-      // 3. Mix both channels into one stream via AudioContext
-      const audioCtx  = new AudioContext({ sampleRate: 48_000 });
+      // 3. AudioContext for the merged stereo stream
+      const audioCtx   = new AudioContext({ sampleRate: 48_000 });
       audioCtxRef.current = audioCtx;
       const destination = audioCtx.createMediaStreamDestination();
       const merger      = audioCtx.createChannelMerger(2);
@@ -198,7 +207,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       }
 
       if (systemAudio && systemAudio.getAudioTracks().length > 0) {
-        const src     = audioCtx.createMediaStreamSource(systemAudio);
+        const src      = audioCtx.createMediaStreamSource(systemAudio);
         const analyser = audioCtx.createAnalyser();
         analyser.fftSize = 512;
         src.connect(analyser);
@@ -207,43 +216,62 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
       }
 
       setChannelInfo({
-        hasMic:      !!(micStream && micStream.getAudioTracks().length > 0),
-        hasSystem:   !!(systemAudio && systemAudio.getAudioTracks().length > 0),
+        hasMic:      !!(micStream    && micStream.getAudioTracks().length > 0),
+        hasSystem:   !!(systemAudio  && systemAudio.getAudioTracks().length > 0),
         micLabel:    micStream?.getAudioTracks()[0]?.label    || 'No microphone',
         systemLabel: systemAudio?.getAudioTracks()[0]?.label  || 'No system audio',
       });
 
-      // 4. MediaRecorder on the mixed stream
+      // 4. Choose MIME type
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
       mimeTypeRef.current     = mimeType;
       lastMimeTypeRef.current = mimeType;
 
-      const recorder = new MediaRecorder(destination.stream, {
+      const recorderOpts: MediaRecorderOptions = {
         mimeType,
-        // FIX 1: Cap bitrate so recordings stay well within provider file-size limits.
-        //   48 kbps Opus stereo is transparent for speech (Opus is efficient at this rate).
-        //   10 min  → ~3.6 MB   (Gemini inline / Groq / OpenAI — all fine)
-        //   60 min  → ~21.6 MB  (Gemini inline — still under 25 MB limit)
-        //   2 hours → ~43.2 MB  (Gemini File API — well within 2 GB limit)
-        //   3 hours → ~64.8 MB  (Gemini File API — still fine)
+        // 48 kbps Opus stereo: transparent for speech, keeps files small
+        //   10 min → ~3.6 MB  (all providers inline)
+        //   2 hr   → ~43 MB   (Gemini File API)
         audioBitsPerSecond: 48_000,
-      });
+      };
 
-      recorder.ondataavailable = e => {
+      // 5a. Merged recorder (AudioContext destination → stereo WebM)
+      const mergedRec = new MediaRecorder(destination.stream, recorderOpts);
+      mergedRec.ondataavailable = e => {
         if (e.data.size > 0 && !cancelledRef.current) {
           chunksRef.current.push(e.data);
-          // FIX 3: Keep lastChunksRef in sync so downloadAudio() always has
-          // the latest data even if the recorder is torn down before it's called.
           lastChunksRef.current = [...chunksRef.current];
         }
       };
-      recorderRef.current = recorder;
+      recorderRef.current = mergedRec;
 
-      // 5. Go!
+      // 5b. Mic-only recorder — raw mic stream, NOT the AudioContext output.
+      //     This gives Gemini a clean isolated track: every word = [HostName].
+      if (micStream && micStream.getAudioTracks().length > 0) {
+        const micRec = new MediaRecorder(micStream, recorderOpts);
+        micRec.ondataavailable = e => {
+          if (e.data.size > 0 && !cancelledRef.current) micChunksRef.current.push(e.data);
+        };
+        micRecorderRef.current = micRec;
+        micRec.start(1_000);
+      }
+
+      // 5c. System-only recorder — raw system audio stream.
+      //     This gives Gemini isolated participant voices.
+      if (systemAudio && systemAudio.getAudioTracks().length > 0) {
+        const sysRec = new MediaRecorder(systemAudio, recorderOpts);
+        sysRec.ondataavailable = e => {
+          if (e.data.size > 0 && !cancelledRef.current) sysChunksRef.current.push(e.data);
+        };
+        sysRecorderRef.current = sysRec;
+        sysRec.start(1_000);
+      }
+
+      // Start merged last so all three recorders are as time-aligned as possible
       startTimeRef.current = Date.now();
-      recorder.start(1_000); // 1-second timeslice — chunks arrive continuously
+      mergedRec.start(1_000);
 
       timerRef.current = window.setInterval(() => {
         if (!cancelledRef.current) setDuration(s => s + 1);
@@ -265,39 +293,68 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   const stopRecording = useCallback((): Promise<RecordingResult> => {
     return new Promise(resolve => {
-      if (timerRef.current)     { clearInterval(timerRef.current);          timerRef.current     = null; }
-      if (levelFrameRef.current){ cancelAnimationFrame(levelFrameRef.current); levelFrameRef.current = null; }
+      if (timerRef.current)      { clearInterval(timerRef.current);           timerRef.current      = null; }
+      if (levelFrameRef.current) { cancelAnimationFrame(levelFrameRef.current); levelFrameRef.current = null; }
 
       const durationSeconds = Math.round((Date.now() - startTimeRef.current) / 1_000);
 
+      // We wait for all active recorders to fire their onstop event.
+      // pendingStops starts at 3 (one per recorder slot). Each recorder
+      // decrements it; when it hits zero we assemble the final result.
+      let pendingStops = 3;
+
       const finish = () => {
-        const blob = new Blob(chunksRef.current, { type: mimeTypeRef.current });
-        // FIX 3: Persist chunk data for the fallback download
+        pendingStops--;
+        if (pendingStops > 0) return;
+
+        const merged = new Blob(chunksRef.current,    { type: mimeTypeRef.current });
+        const mic    = micChunksRef.current.length > 0
+          ? new Blob(micChunksRef.current,  { type: mimeTypeRef.current })
+          : undefined;
+        const sys    = sysChunksRef.current.length > 0
+          ? new Blob(sysChunksRef.current,  { type: mimeTypeRef.current })
+          : undefined;
+
         lastChunksRef.current   = [...chunksRef.current];
         lastMimeTypeRef.current = mimeTypeRef.current;
+
         cleanupHardware();
         setState('stopped');
-        resolve({ audio: blob, mimeType: mimeTypeRef.current, durationSeconds });
+        resolve({
+          audio:         merged,
+          mimeType:      mimeTypeRef.current,
+          durationSeconds,
+          micAudio:      mic,
+          systemAudio:   sys,
+        });
       };
 
-      const recorder = recorderRef.current;
-      if (!recorder || recorder.state === 'inactive') { finish(); return; }
+      const stopOne = (rec: MediaRecorder | null) => {
+        if (!rec || rec.state === 'inactive') { finish(); return; }
+        rec.onstop = finish;
+        rec.stop();
+      };
 
-      recorder.onstop = finish;
-      recorder.stop();
+      stopOne(recorderRef.current);
+      stopOne(micRecorderRef.current);
+      stopOne(sysRecorderRef.current);
     });
   }, [cleanupHardware]);
 
   // ── PAUSE / RESUME ────────────────────────────────────────────────────────
 
   const pauseRecording = useCallback(() => {
-    if (recorderRef.current?.state === 'recording') recorderRef.current.pause();
+    [recorderRef, micRecorderRef, sysRecorderRef].forEach(r => {
+      if (r.current?.state === 'recording') r.current.pause();
+    });
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setState('paused');
   }, []);
 
   const resumeRecording = useCallback(() => {
-    if (recorderRef.current?.state === 'paused') recorderRef.current.resume();
+    [recorderRef, micRecorderRef, sysRecorderRef].forEach(r => {
+      if (r.current?.state === 'paused') r.current.resume();
+    });
     timerRef.current = window.setInterval(() => {
       if (!cancelledRef.current) setDuration(s => s + 1);
     }, 1_000);
@@ -308,15 +365,16 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   const cancelRecording = useCallback(() => {
     cancelledRef.current = true;
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      recorderRef.current.ondataavailable = null;
-      recorderRef.current.onstop          = null;
-      try { recorderRef.current.stop(); } catch { /* already stopped */ }
-      recorderRef.current = null;
-    }
-    // FIX 3: Clear the live chunk buffer but keep lastChunksRef so
-    // downloadAudio() can still offer a fallback even after cancellation.
-    chunksRef.current = [];
+    [recorderRef, micRecorderRef, sysRecorderRef].forEach(r => {
+      if (r.current && r.current.state !== 'inactive') {
+        r.current.ondataavailable = null;
+        r.current.onstop          = null;
+        try { r.current.stop(); } catch { /* already stopped */ }
+      }
+    });
+    chunksRef.current    = [];
+    micChunksRef.current = [];
+    sysChunksRef.current = [];
     cleanupHardware();
     setDuration(0);
     setMicLevel(0);
@@ -325,18 +383,12 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setState('idle');
   }, [cleanupHardware]);
 
-  // ── DOWNLOAD FALLBACK (FIX 2) ─────────────────────────────────────────────
+  // ── DOWNLOAD FALLBACK ─────────────────────────────────────────────────────
 
-  /**
-   * Trigger a browser download of the most recently recorded audio.
-   * Safe to call at any point — before, during, or after transcription.
-   * Ensures audio is never lost even when the API call fails.
-   */
   const downloadAudio = useCallback((filename?: string) => {
     const chunks   = lastChunksRef.current;
     const mimeType = lastMimeTypeRef.current;
     if (chunks.length === 0) return;
-
     const blob = new Blob(chunks, { type: mimeType });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -348,21 +400,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     setTimeout(() => URL.revokeObjectURL(url), 2_000);
   }, []);
 
-  const hasRecordedAudio = lastChunksRef.current.length > 0;
-
   return {
-    state,
-    duration,
-    micLevel,
-    systemLevel,
-    channelInfo,
-    error,
-    startRecording,
-    stopRecording,
-    pauseRecording,
-    resumeRecording,
-    cancelRecording,
-    downloadAudio,
-    hasRecordedAudio,
+    state, duration, micLevel, systemLevel, channelInfo, error,
+    startRecording, stopRecording, pauseRecording, resumeRecording,
+    cancelRecording, downloadAudio,
+    hasRecordedAudio: lastChunksRef.current.length > 0,
   };
 }

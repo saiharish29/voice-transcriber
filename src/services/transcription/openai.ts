@@ -28,7 +28,7 @@
  *   stay well under 25 MB because useAudioRecorder.ts caps bitrate at 64 kbps.
  */
 
-import type { MeetingContext } from '@/types';
+import type { MeetingContext, AudioTracks } from '@/types';
 import { buildTranscriptionPrompt } from './gemini'; // prompt is provider-agnostic
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -170,15 +170,29 @@ export async function fetchOpenAIModels(apiKey: string) {
 
 // ── Core transcription dispatcher ─────────────────────────────────────────────
 
+function mergeTimestampedLines(lines: string[]): string {
+  const parsed = lines
+    .map(line => {
+      const m = line.match(/^\[(\d{2}):(\d{2}):(\d{2})\]/);
+      if (!m) return null;
+      const secs = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+      return { secs, line };
+    })
+    .filter((x): x is { secs: number; line: string } => x !== null);
+  parsed.sort((a, b) => a.secs - b.secs);
+  return parsed.map(x => x.line).join('\n');
+}
+
 export async function transcribeWithOpenAI(
   file: File,
   apiKey: string,
   model: string,
   onProgress: (stage: string, detail?: string) => void,
   context?: MeetingContext,
+  tracks?: AudioTracks,
 ): Promise<string> {
   if (model === 'whisper-1') {
-    return transcribeWithWhisper(file, apiKey, onProgress, context);
+    return transcribeWithWhisper(file, apiKey, onProgress, context, tracks);
   }
   // GPT-4o audio models have a hard 25 MB limit with no chunking path
   if (file.size > INLINE_LIMIT_BYTES_OPENAI) {
@@ -313,8 +327,10 @@ async function transcribeWithWhisper(
   apiKey: string,
   onProgress: (stage: string, detail?: string) => void,
   context?: MeetingContext,
+  tracks?: AudioTracks,
 ): Promise<string> {
-  const mimeType = normalizeMimeType(file.type);
+  const mimeType   = normalizeMimeType(file.type);
+  const hostName   = context?.hostName?.trim() || 'Host';
 
   const names = [
     context?.hostName ?? '',
@@ -326,6 +342,30 @@ async function transcribeWithWhisper(
         ? `${context.meetingTitle}: ${names.join(', ')}`
         : names.join(', '))
     : '';
+
+  // ── Dual-track path ───────────────────────────────────────────────────────
+  if (tracks?.micFile) {
+    const micMime = normalizeMimeType(tracks.micFile.type);
+    const sysMime = tracks.systemFile ? normalizeMimeType(tracks.systemFile.type) : mimeType;
+
+    onProgress('Transcribing', 'Transcribing host microphone track...');
+    const micData = await transcribeBlob(tracks.micFile, micMime, tracks.micFile.name, apiKey, promptHint)
+      .catch(err => { throw new Error(classifyOpenAIError(err).message); });
+
+    const micLines = formatSegments(micData, 0, []).split('\n').filter(Boolean)
+      .map(line => line.replace(/^\[(\d{2}:\d{2}:\d{2})\]\s*/, `[$1] ${hostName}: `));
+
+    if (!tracks.systemFile) return micLines.join('\n');
+
+    onProgress('Transcribing', 'Transcribing participant audio track...');
+    const sysData = await transcribeBlob(tracks.systemFile, sysMime, tracks.systemFile.name, apiKey, promptHint)
+      .catch(err => { throw new Error(classifyOpenAIError(err).message); });
+
+    const sysLines = formatSegments(sysData, 0, names).split('\n').filter(Boolean)
+      .map(line => line.replace(/^\[(\d{2}:\d{2}:\d{2})\]\s*/, '$&Participant: '));
+
+    return mergeTimestampedLines([...micLines, ...sysLines]);
+  }
 
   // ── FIX 3: Chunked transcription for large files ──────────────────────────
   // Live recordings are capped at 64 kbps (useAudioRecorder.ts) so they stay

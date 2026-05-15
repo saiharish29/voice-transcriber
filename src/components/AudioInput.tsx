@@ -9,10 +9,10 @@
 import React, { useState, useRef } from 'react';
 import { useAudioRecorder } from '@/hooks/useAudioRecorder';
 import { ACCEPTED_EXTENSIONS, ACCEPTED_MIME_TYPES, MAX_FILE_SIZE_BYTES } from '@/services/transcription';
-import type { MeetingContext } from '@/types';
+import type { MeetingContext, AudioTracks } from '@/types';
 
 interface Props {
-  onTranscribe: (file: File, context: MeetingContext) => void;
+  onTranscribe: (file: File, context: MeetingContext, tracks?: AudioTracks) => void;
   disabled: boolean;
 }
 
@@ -52,7 +52,9 @@ export function AudioInput({ onTranscribe, disabled }: Props) {
   const [dragOver,  setDragOver]  = useState(false);
 
   // Recorded result waiting to be submitted
-  const [recordedFile, setRecordedFile] = useState<File | null>(null);
+  const [recordedFile,  setRecordedFile]  = useState<File | null>(null);
+  // Separate mic/system tracks for dual-track speaker identification
+  const [recordedTracks, setRecordedTracks] = useState<AudioTracks | undefined>(undefined);
 
   // ── Participant / speaker identification fields ──────────────────────────
   const [hostName,      setHostName]      = useState('');
@@ -106,25 +108,43 @@ export function AudioInput({ onTranscribe, disabled }: Props) {
 
   const handleStartRecording = async () => {
     setRecordedFile(null);
+    setRecordedTracks(undefined);
     await recorder.startRecording();
   };
 
   const handleStopRecording = async () => {
-    const result = await recorder.stopRecording();
-    const ext    = result.mimeType.includes('webm') ? 'webm' : 'ogg';
-    const blob   = new File(
+    const result    = await recorder.stopRecording();
+    const ext       = result.mimeType.includes('webm') ? 'webm' : 'ogg';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+    const blob = new File(
       [result.audio],
-      `recording-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}`,
+      `recording-${timestamp}.${ext}`,
       { type: result.mimeType }
     );
     setRecordedFile(blob);
+
+    // Store separate tracks for dual-track speaker identification.
+    // These give Gemini an unambiguous map: micFile = host, systemFile = participants.
+    if (result.micAudio || result.systemAudio) {
+      setRecordedTracks({
+        micFile:    result.micAudio
+          ? new File([result.micAudio],    `mic-${timestamp}.${ext}`,    { type: result.mimeType })
+          : undefined,
+        systemFile: result.systemAudio
+          ? new File([result.systemAudio], `system-${timestamp}.${ext}`, { type: result.mimeType })
+          : undefined,
+      });
+    }
   };
 
   const isRecording = recorder.state === 'recording' || recorder.state === 'paused';
 
   // ── Derived: what file will be transcribed ───────────────────────────────
 
-  const activeFile = tab === 'upload' ? file : recordedFile;
+  const activeFile   = tab === 'upload' ? file : recordedFile;
+  // Only pass tracks for live recordings (not uploaded files)
+  const activeTracks = tab === 'record' ? recordedTracks : undefined;
 
   const buildContext = (): MeetingContext => ({
     hostName:     hostName.trim(),
@@ -450,7 +470,9 @@ export function AudioInput({ onTranscribe, disabled }: Props) {
             className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 bg-surface-50 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent"
           />
           <p className="text-xs text-slate-400 mt-1">
-            Your mic is the clearest channel — knowing your name gives Gemini a strong starting anchor.
+            {activeTracks?.micFile
+              ? '✓ Your microphone was recorded separately — Gemini will attribute every word in your mic track to your name with 100% accuracy.'
+              : 'Your mic is the clearest channel — knowing your name helps Gemini identify you.'}
           </p>
         </div>
 
@@ -501,10 +523,31 @@ export function AudioInput({ onTranscribe, disabled }: Props) {
         )}
       </div>
 
+      {/* ── Speaker identification mode indicator ───────────────────────────── */}
+      {activeFile && !isRecording && activeTracks && (
+        <div className={`mt-4 px-4 py-2.5 rounded-xl border text-xs font-medium flex items-center gap-2 ${
+          activeTracks.micFile && activeTracks.systemFile
+            ? 'bg-green-50 border-green-200 text-green-800'
+            : activeTracks.micFile
+            ? 'bg-brand-50 border-brand-200 text-brand-800'
+            : 'bg-amber-50 border-amber-200 text-amber-800'
+        }`}>
+          <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          {activeTracks.micFile && activeTracks.systemFile
+            ? 'Dual-track mode — host mic + participant audio recorded separately. Gemini will identify speakers with high accuracy.'
+            : activeTracks.micFile
+            ? 'Mic-only mode — host mic isolated. Share your screen with audio next time to also capture participant voices.'
+            : 'Single-track mode — speaker identification based on voice analysis only.'}
+        </div>
+      )}
+
       {/* ── Transcribe button ────────────────────────────────────────────────── */}
       {activeFile && !isRecording && (
         <button
-          onClick={() => onTranscribe(activeFile, buildContext())}
+          onClick={() => onTranscribe(activeFile, buildContext(), activeTracks)}
           disabled={disabled}
           className="w-full mt-4 py-4 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-2xl text-lg shadow-lg shadow-brand-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3"
         >

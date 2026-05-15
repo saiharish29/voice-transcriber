@@ -28,7 +28,7 @@
  *   useAudioRecorder.ts caps the bitrate at 64 kbps.
  */
 
-import type { MeetingContext } from '@/types';
+import type { MeetingContext, AudioTracks } from '@/types';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -134,6 +134,27 @@ export async function fetchGroqModels(_apiKey: string) {
   return GROQ_AUDIO_MODELS;
 }
 
+// ── Timestamp merge helper ────────────────────────────────────────────────────
+
+/**
+ * Interleave two sets of [HH:MM:SS]-prefixed transcript lines by timestamp.
+ * Used when we have separate mic and system transcripts that need to be
+ * combined into a single chronological transcript.
+ */
+function mergeTimestampedLines(lines: string[]): string {
+  const parsed = lines
+    .map(line => {
+      const m = line.match(/^\[(\d{2}):(\d{2}):(\d{2})\]/);
+      if (!m) return null;
+      const secs = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+      return { secs, line };
+    })
+    .filter((x): x is { secs: number; line: string } => x !== null);
+
+  parsed.sort((a, b) => a.secs - b.secs);
+  return parsed.map(x => x.line).join('\n');
+}
+
 // ── Single-blob transcription helper ─────────────────────────────────────────
 
 async function transcribeBlob(
@@ -211,8 +232,10 @@ export async function transcribeWithGroq(
   model: string,
   onProgress: (stage: string, detail?: string) => void,
   context?: MeetingContext,
+  tracks?: AudioTracks,
 ): Promise<string> {
   const mimeType = normalizeMimeType(file.type);
+  const hostName = context?.hostName?.trim() || 'Host';
 
   // Build names prompt hint (vocabulary priming for Whisper)
   const names = [
@@ -225,6 +248,38 @@ export async function transcribeWithGroq(
         ? `${context.meetingTitle}: ${names.join(', ')}`
         : names.join(', '))
     : '';
+
+  // ── Dual-track path: transcribe mic and system separately, then merge ─────
+  // Whisper can't identify speakers by voice, but we CAN guarantee the host
+  // label by transcribing the mic track alone (every word = host).
+  if (tracks?.micFile) {
+    const micMime = normalizeMimeType(tracks.micFile.type);
+    const sysMime = tracks.systemFile ? normalizeMimeType(tracks.systemFile.type) : mimeType;
+
+    onProgress('Transcribing', 'Transcribing host microphone track...');
+    const micData = await transcribeBlob(
+      tracks.micFile, micMime, tracks.micFile.name, apiKey, model, promptHint
+    ).catch(err => { throw new Error(classifyGroqError(err).message); });
+
+    const micLines = formatSegments(micData, 0, []).split('\n').filter(Boolean)
+      .map(line => line.replace(/^\[(\d{2}:\d{2}:\d{2})\]\s*/, `[$1] ${hostName}: `));
+
+    if (!tracks.systemFile) {
+      // Mic-only: all lines are the host
+      return micLines.join('\n');
+    }
+
+    onProgress('Transcribing', 'Transcribing participant audio track...');
+    const sysData = await transcribeBlob(
+      tracks.systemFile, sysMime, tracks.systemFile.name, apiKey, model, promptHint
+    ).catch(err => { throw new Error(classifyGroqError(err).message); });
+
+    const sysLines = formatSegments(sysData, 0, names).split('\n').filter(Boolean)
+      .map(line => line.replace(/^\[(\d{2}:\d{2}:\d{2})\]\s*/, '$&Participant: '));
+
+    // Merge both sets of timestamped lines in chronological order
+    return mergeTimestampedLines([...micLines, ...sysLines]);
+  }
 
   // ── FIX 3: Chunked transcription for large uploaded files ─────────────────
   // Live recordings are capped at 64 kbps (see useAudioRecorder.ts) so a 10-min

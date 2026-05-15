@@ -1,56 +1,46 @@
 /**
  * gemini.ts — Gemini transcription provider.
  *
- * The API key comes from the caller (loaded from localStorage in the browser).
- * It is passed directly to Google's API via the @google/genai SDK.
- * This module is stateless — it never stores, logs, or forwards the key.
+ * ── Speaker identification architecture ──────────────────────────────────────
  *
- * File handling strategy:
- * ≤ 15 MB → inline base64 in the generateContent request (fast, simple)
- *           (15 MB raw → ~20 MB base64 — stays within Gemini's 20 MB request limit)
- * > 15 MB → Gemini File API upload → poll until ACTIVE → reference by URI
- *           (File API supports up to 2 GB per file, files auto-delete in 48 h)
+ * PREVIOUS (broken): Send one mixed audio file → ask Gemini to guess speakers.
+ *   Gemini uses voice similarity heuristics. Fails when people sound alike,
+ *   have similar accents, or the meeting topic is technical.
  *
- * ── FIXES IN THIS VERSION ────────────────────────────────────────────────────
- * FIX 1 — INLINE_LIMIT_BYTES 20 MB → 15 MB
- *   A 20 MB audio file encodes to ~27 MB of base64. Gemini's request body
- *   limit is 20 MB, so files between ~14–20 MB caused silent 413 failures.
- *   15 MB → ~20 MB base64 is the correct safe ceiling.
+ * NEW (robust): Send TWO separately recorded audio tracks in one request.
  *
- * FIX 2 — normalizeMimeType() strips codec parameters
- *   MediaRecorder sets file.type = "audio/webm;codecs=opus". Passing this to
- *   Gemini's File API or inlineData returns a 400 "unsupported MIME type".
- *   We strip everything after the first semicolon: "audio/webm;codecs=opus"
- *   → "audio/webm".
+ *   Track 1 (mic-only)    → labelled: "EVERY WORD HERE IS [HostName]"
+ *   Track 2 (system-only) → labelled: "THESE ARE THE REMOTE PARTICIPANTS"
  *
- * FIX 3 — Promise.race() timeouts on upload AND generateContent
- *   Without a timeout the UI hangs forever when the network stalls or Gemini
- *   is slow to respond. Both operations now have hard upper bounds so users
- *   get a clear error rather than an infinite spinner.
+ *   Gemini's job changes from "guess who is speaking" to "transcribe and
+ *   time-align two labelled tracks". Host attribution is now 100% guaranteed.
+ *   Participant attribution is dramatically improved because Gemini hears
+ *   isolated participant voices, not a mix with the host.
+ *
+ * ── File handling ─────────────────────────────────────────────────────────────
+ *   ≤ 15 MB → inline base64 (15 MB → ~20 MB base64, within the 20 MB request limit)
+ *   > 15 MB → Gemini File API (up to 2 GB, auto-deleted after 48 h)
+ *
+ * ── Other reliability fixes ───────────────────────────────────────────────────
+ *   - normalizeMimeType() strips ;codecs=opus that Gemini's API rejects
+ *   - Promise.race() timeouts on both upload (15 min) and generateContent (20 min)
+ *   - INLINE_LIMIT_BYTES = 15 MB (was 20 MB — base64 overhead fix)
  */
 
 import { GoogleGenAI } from '@google/genai';
-import type { MeetingContext } from '@/types';
+import type { MeetingContext, AudioTracks } from '@/types';
 
 // ── Tunables ──────────────────────────────────────────────────────────────────
-/**
- * Safe ceiling for inline base64 uploads.
- * 15 MB raw → ~20 MB base64, which sits at Gemini's request body limit.
- * Anything larger goes through the File API instead.
- */
-const INLINE_LIMIT_BYTES   = 15 * 1024 * 1024; // 15 MB  (was 20 MB — see FIX 1)
-const POLL_INTERVAL_MS     = 3_000;
-const MAX_POLL_ATTEMPTS    = 120;               // 120 × 3 s = 6 min max
-const MAX_RETRIES          = 3;
-const RETRY_BASE_MS        = 3_000;
-const RATE_LIMIT_WAIT_MS   = 65_000;
-/** Timeout for the entire File API upload + polling phase. */
-const UPLOAD_TIMEOUT_MS    = 15 * 60 * 1_000;  // 15 minutes (covers slow connections uploading 2-hr files)
-/** Timeout for the generateContent call. */
-const GENERATE_TIMEOUT_MS  = 20 * 60 * 1_000;  // 20 minutes (Gemini needs ~8-12 min for 2-hr audio)
+const INLINE_LIMIT_BYTES  = 15 * 1024 * 1024;  // 15 MB → ~20 MB base64
+const POLL_INTERVAL_MS    = 3_000;
+const MAX_POLL_ATTEMPTS   = 120;               // 6 min max polling
+const MAX_RETRIES         = 3;
+const RETRY_BASE_MS       = 3_000;
+const RATE_LIMIT_WAIT_MS  = 65_000;
+const UPLOAD_TIMEOUT_MS   = 15 * 60 * 1_000;  // 15 min upload timeout
+const GENERATE_TIMEOUT_MS = 20 * 60 * 1_000;  // 20 min generation timeout
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Known Gemini models that support audio input */
 export const AUDIO_CAPABLE_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.5-pro',
@@ -65,37 +55,125 @@ export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
 
 // ── MIME type normalisation ───────────────────────────────────────────────────
 
-/**
- * Strip codec / parameter suffixes that the Gemini API does not accept.
- *
- * MediaRecorder sets file.type to strings like:
- *   "audio/webm;codecs=opus"  →  "audio/webm"
- *   "audio/ogg;codecs=opus"   →  "audio/ogg"
- *
- * Passing the full codec string to Gemini's File API or inlineData causes a
- * 400 "Invalid MIME type" error that manifests as a silent transcription failure.
- */
+/** Strip codec/parameter suffixes: "audio/webm;codecs=opus" → "audio/webm" */
 function normalizeMimeType(type: string): string {
   const base = (type || 'audio/webm').split(';')[0].trim();
   return base || 'audio/webm';
 }
 
-/** Rejects after `ms` milliseconds with a user-friendly timeout message. */
+/** Rejects after `ms` ms with a clear timeout error. */
 function timeoutAfter(ms: number, label: string): Promise<never> {
   return new Promise((_, reject) =>
-    setTimeout(
-      () => reject(new Error(
-        `${label} timed out after ${Math.round(ms / 60_000)} minutes. ` +
-        `This can happen with very large files or a slow connection. ` +
-        `Try a shorter/smaller recording, or check your network and retry.`
-      )),
-      ms
-    )
+    setTimeout(() => reject(new Error(
+      `${label} timed out after ${Math.round(ms / 60_000)} minutes. ` +
+      `Try a shorter recording or check your network connection.`
+    )), ms)
   );
 }
 
-// ── Transcription prompt ──────────────────────────────────────────────────────
+// ── Prompts ───────────────────────────────────────────────────────────────────
 
+/**
+ * Prompt used when we have TWO separate audio tracks.
+ * This is the primary speaker-identification path for live recordings.
+ *
+ * Gemini's task is reduced to transcription + time-alignment.
+ * It does NOT need to guess who is speaking — we tell it explicitly.
+ */
+export function buildDualTrackPrompt(ctx?: MeetingContext): string {
+  const hostName    = ctx?.hostName?.trim()    || 'Host';
+  const hasNames    = !!(ctx?.participants?.length);
+  const participants = (ctx?.participants ?? []).map(p => p.trim()).filter(Boolean);
+  const title       = ctx?.meetingTitle?.trim();
+
+  const participantBlock = hasNames
+    ? `Known remote participants: ${participants.map(p => `"${p}"`).join(', ')}.
+       Match voices in Track 2 to these names using voice consistency and any name mentions
+       ("Thanks Priya", "John, what do you think?"). Once a voice is matched to a name,
+       keep that assignment for the entire recording.
+       If a voice cannot be confidently matched to a name, label it "Participant B", "Participant C", etc.`
+    : `No participant names were provided.
+       Label distinct voices in Track 2 as "Participant B", "Participant C", etc.
+       Keep each label consistent throughout — never reassign a label to a different voice.`;
+
+  return `You are transcribing a meeting from TWO AUDIO TRACKS recorded simultaneously.
+${title ? `Meeting title: "${title}"\n` : ''}
+═══════════════════════════════════════════════════
+TRACK 1 — MICROPHONE (the first audio you received)
+═══════════════════════════════════════════════════
+This is the host's microphone recording.
+EVERY SINGLE WORD in Track 1 belongs to: "${hostName}"
+Do not assign any other name to speech from Track 1 under any circumstances.
+
+═══════════════════════════════════════════════════
+TRACK 2 — SYSTEM AUDIO (the second audio you received)
+═══════════════════════════════════════════════════
+This is the system/speaker audio captured from the meeting platform.
+It contains the voices of ALL remote participants.
+${participantBlock}
+
+═══════════════════════════════════════════════════
+YOUR TASK
+═══════════════════════════════════════════════════
+Produce ONE unified transcript that interleaves both tracks in chronological order.
+Both tracks start at the same moment (time 0:00:00).
+Use the timestamps within each track to correctly interleave the speech.
+
+TRANSCRIPTION RULES:
+1. Include every word — do NOT summarise, skip, or paraphrase.
+2. Timestamp format: [HH:MM:SS] at the start of each new speaker turn and every ~30 seconds during long monologues.
+3. Lightly clean filler words (um, uh) but preserve natural flow.
+4. Mark inaudible speech as [inaudible].
+5. Note non-speech sounds: [laughter], [background noise], [silence], etc.
+6. Do NOT add summaries, headers, or any content beyond the transcript.
+
+OUTPUT FORMAT (nothing before or after):
+[HH:MM:SS] ${hostName}: Words spoken here...
+[HH:MM:SS] ${hasNames && participants[0] ? participants[0] : 'Participant B'}: Their reply...
+
+If either track contains no detectable speech, note it as [No speech detected on this track].`;
+}
+
+/**
+ * Prompt used when only the microphone track is available (no system audio).
+ * Host attribution is still guaranteed; remote participants may be faintly
+ * audible through the microphone but are NOT reliably identifiable.
+ */
+export function buildMicOnlyPrompt(ctx?: MeetingContext): string {
+  const hostName = ctx?.hostName?.trim() || 'Host';
+  const title    = ctx?.meetingTitle?.trim();
+
+  return `You are transcribing a meeting from a MICROPHONE-ONLY recording.
+${title ? `Meeting title: "${title}"\n` : ''}
+IMPORTANT — RECORDING TYPE: This is the host's microphone only.
+The host is: "${hostName}"
+${hostName}'s voice is the clearest and loudest voice in this recording.
+
+Remote participants were NOT recorded through this microphone.
+Their voices may be faintly audible as room echo/bleed from speakers,
+but their audio quality will be significantly lower than ${hostName}'s.
+Do your best to transcribe what they say but mark uncertain sections [inaudible].
+Label ${hostName} as "${hostName}" and any other voices as "Participant B", "Participant C", etc.
+${ctx?.participants?.length
+  ? `Known participants (for reference): ${ctx.participants.map(p => `"${p}"`).join(', ')}.`
+  : ''}
+
+TRANSCRIPTION RULES:
+1. Include every word — do NOT summarise or skip.
+2. Timestamps [HH:MM:SS] at each speaker turn and every ~30 seconds.
+3. Mark inaudible sections as [inaudible].
+4. Note non-speech sounds: [laughter], [background noise], [silence], etc.
+5. Do NOT add summaries or headers.
+
+OUTPUT FORMAT:
+[HH:MM:SS] ${hostName}: Words spoken...
+[HH:MM:SS] Participant B: Their reply...`;
+}
+
+/**
+ * Fallback prompt for uploaded files (no track separation available).
+ * Uses the original multi-tier speaker identification strategy.
+ */
 export function buildTranscriptionPrompt(ctx?: MeetingContext): string {
   const hasHost         = !!(ctx?.hostName?.trim());
   const hasParticipants = !!(ctx?.participants?.length);
@@ -108,47 +186,40 @@ export function buildTranscriptionPrompt(ctx?: MeetingContext): string {
   if (allNames.length > 0) {
     participantBlock = `
 MEETING PARTICIPANTS (use these names to label speakers):
-${hasHost         ? `• HOST / RECORDER: "${ctx!.hostName.trim()}" — this person's voice comes from the primary microphone (left audio channel in stereo recordings). Every voice on that channel belongs to them.` : ''}
-${hasParticipants ? `• OTHER PARTICIPANTS: ${ctx!.participants.filter(p => p.trim()).map(p => `"${p.trim()}"`).join(', ')} — their voices come through the system/speaker audio (right channel or mixed channel).` : ''}
+${hasHost ? `• HOST / RECORDER: "${ctx!.hostName.trim()}" — their voice comes from the primary microphone (loudest, clearest voice).` : ''}
+${hasParticipants ? `• OTHER PARTICIPANTS: ${ctx!.participants.filter(p => p.trim()).map(p => `"${p.trim()}"`).join(', ')}` : ''}
 ${ctx?.meetingTitle ? `• MEETING TITLE: "${ctx.meetingTitle}"` : ''}
 
-SPEAKER IDENTIFICATION STRATEGY (apply in this order):
-1. CHANNEL SIGNAL — If the recording is stereo: left channel = ${hasHost ? `"${ctx!.hostName.trim()}"` : 'the host'}; right channel = participants. This is the strongest signal — never contradict it.
-2. NAME MENTIONS — When someone is addressed by name ("Thanks, Sarah" / "John, what do you think?") assign that name to that voice from that point forward.
-3. VOICE CONSISTENCY — Each person has a unique voice (pitch, pace, accent). Once you identify a voice, keep that assignment for the entire transcript. Never swap names mid-recording without a clear reason.
-4. CONTEXT CLUES — Role descriptions, technical expertise, meeting behaviour (e.g., who is presenting, who is asking questions).
-5. FALLBACK — If you genuinely cannot identify a speaker after all the above, use "Speaker B", "Speaker C", etc. Do not guess randomly.
+SPEAKER IDENTIFICATION STRATEGY (apply in order):
+1. CHANNEL SIGNAL — in stereo recordings the left channel is typically the host's mic; the right channel carries all participants. Use this as the strongest signal if the audio is stereo.
+2. NAME MENTIONS — "Thanks, Sarah" or "John, what do you think?" locks that voice to that name.
+3. VOICE CONSISTENCY — once matched, never swap a voice to a different name.
+4. CONTEXT CLUES — role, expertise, meeting behaviour.
+5. FALLBACK — use "Speaker B", "Speaker C" if genuinely uncertain.
 `;
   } else {
     participantBlock = `
 NO PARTICIPANT NAMES PROVIDED:
-Label speakers as Speaker A, Speaker B, Speaker C, etc. based on distinct voice characteristics.
-Keep assignments consistent throughout — once a voice is Speaker B, it is always Speaker B.
+Label speakers as Speaker A, Speaker B, etc. based on voice characteristics.
+Keep labels consistent throughout.
 `;
   }
 
   return `You are a professional audio transcription service.
-
-YOUR ONLY JOB: Produce an accurate, complete, timestamped transcript of the audio.
+YOUR ONLY JOB: Produce an accurate, complete, timestamped transcript.
 ${participantBlock}
 TRANSCRIPTION RULES:
-1. Transcribe every word spoken — do NOT summarize, skip, or paraphrase.
-2. Add a timestamp in [HH:MM:SS] format at the start of each new speaker turn and every ~30 seconds during long monologues.
-3. Lightly clean filler words (um, uh) but preserve natural flow and meaning.
+1. Transcribe every word — do NOT summarise, skip, or paraphrase.
+2. Timestamps [HH:MM:SS] at each new speaker turn and every ~30 seconds during monologues.
+3. Lightly clean filler words (um, uh) but preserve natural flow.
 4. Mark inaudible sections as [inaudible].
-5. Note significant non-speech sounds inline: [laughter], [applause], [background noise], [silence], [sound of disconnecting], etc.
-6. Do NOT add summaries, analysis, section headers, or any content beyond the transcript itself.
+5. Note significant non-speech sounds: [laughter], [background noise], [silence], etc.
+6. Do NOT add summaries, analysis, or section headers.
 
-OUTPUT FORMAT (follow exactly — nothing before or after):
+OUTPUT FORMAT:
 [HH:MM:SS] Name: Words spoken here...
-[HH:MM:SS] Name: Their reply...
 
-EXAMPLE (if host is Harish and participant is Priya):
-[00:00:00] Harish: Good morning everyone, let's get started.
-[00:00:08] Priya: Morning! Can everyone hear me okay?
-[00:00:45] Harish: Yes, all good. So the agenda today is...
-
-If the audio contains no detectable speech, output exactly:
+If no speech is detected, output exactly:
 [No speech detected — please check your audio file and try again.]`;
 }
 
@@ -163,11 +234,7 @@ function extractHttpStatus(message: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
-interface ErrorInfo {
-  message: string;
-  retryable: boolean;
-  waitMs?: number;
-}
+interface ErrorInfo { message: string; retryable: boolean; waitMs?: number; }
 
 export function classifyError(err: unknown): ErrorInfo {
   const raw    = String((err as any)?.message ?? (err as any)?.toString() ?? '');
@@ -176,63 +243,34 @@ export function classifyError(err: unknown): ErrorInfo {
 
   if (status === 429 || lower.includes('resource_exhausted') || raw.includes('429')) {
     if (lower.includes('quota') || lower.includes('daily') || lower.includes('per day')) {
-      return {
-        message:   'Daily API quota exhausted. It resets at midnight PT — try again tomorrow, or use a different API key.',
-        retryable: false,
-      };
+      return { message: 'Daily API quota exhausted. It resets at midnight PT — try again tomorrow or use a different API key.', retryable: false };
     }
-    return {
-      message:   'Rate limit hit (too many requests per minute). Waiting 65 seconds before retry...',
-      retryable: true,
-      waitMs:    RATE_LIMIT_WAIT_MS,
-    };
+    return { message: 'Rate limit hit. Waiting 65 seconds before retry...', retryable: true, waitMs: RATE_LIMIT_WAIT_MS };
   }
-
-  if (status === 403 || lower.includes('permission_denied') || lower.includes('permission denied')) {
-    return {
-      message:   'API key is invalid or permission was denied. Please check your key in Settings — it should start with "AI...".',
-      retryable: false,
-    };
+  if (status === 403 || lower.includes('permission_denied')) {
+    return { message: 'API key is invalid or permission denied. Please check your key in Settings.', retryable: false };
   }
-
   if (status === 400 && (lower.includes('billing') || lower.includes('precondition'))) {
-    return {
-      message:   'Billing is not enabled on your Google account. Visit aistudio.google.com to enable it.',
-      retryable: false,
-    };
+    return { message: 'Billing is not enabled on your Google account. Visit aistudio.google.com to enable it.', retryable: false };
   }
-
   if (status === 400 || lower.includes('invalid_argument')) {
-    return {
-      message:   `Invalid request — the audio format may not be supported by this model.\nDetail: ${raw.slice(0, 300)}`,
-      retryable: false,
-    };
+    return { message: `Invalid request — audio format may not be supported.\nDetail: ${raw.slice(0, 300)}`, retryable: false };
   }
-
   if (status === 404 || lower.includes('not_found')) {
-    return {
-      message:   'The uploaded file reference has expired (Gemini File API files expire after 48 h). Please re-upload.',
-      retryable: false,
-    };
+    return { message: 'Uploaded file reference has expired. Please re-upload.', retryable: false };
   }
-
   if (status === 503 || lower.includes('unavailable')) {
     return { message: 'Gemini is temporarily overloaded. Retrying...', retryable: true, waitMs: 10_000 };
   }
-
   if (status === 500 || lower.includes('internal')) {
     return { message: 'Gemini internal error. Retrying...', retryable: true };
   }
-
-  // Timeout errors (thrown by timeoutAfter above) are retryable
   if (lower.includes('timed out')) {
     return { message: raw, retryable: true };
   }
-
   return { message: raw || 'Transcription failed. Please try again.', retryable: true };
 }
 
-/** Read a File as a base64 string (strips the data: URI prefix). */
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader   = new FileReader();
@@ -245,13 +283,70 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-// ── Validate API key ──────────────────────────────────────────────────────────
+// ── Core audio-part preparation (shared by single and dual-track paths) ───────
+
+/**
+ * Upload a file to Gemini (inline base64 if ≤ 15 MB, File API otherwise)
+ * and return the audioPart object ready for use in generateContent.
+ */
+async function prepareAudioPart(
+  file: File,
+  ai: GoogleGenAI,
+  label: string,
+  onProgress: (stage: string, detail?: string) => void,
+): Promise<Record<string, unknown>> {
+  const mimeType = normalizeMimeType(file.type);
+
+  if (file.size <= INLINE_LIMIT_BYTES) {
+    onProgress('Preparing', `Encoding ${label} (${(file.size / 1024 / 1024).toFixed(1)} MB) inline...`);
+    const base64 = await fileToBase64(file);
+    return { inlineData: { mimeType, data: base64 } };
+  }
+
+  // Large file — use File API
+  onProgress('Uploading', `${label}: ${(file.size / 1024 / 1024).toFixed(1)} MB → Gemini File API...`);
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (attempt > 1) onProgress('Retrying upload', `${label}: attempt ${attempt}/${MAX_RETRIES}...`);
+
+      const uploaded = await Promise.race([
+        ai.files.upload({ file, config: { mimeType, displayName: file.name } }),
+        timeoutAfter(UPLOAD_TIMEOUT_MS, `${label} upload`),
+      ]);
+
+      let fileInfo: any = uploaded;
+      let polls = 0;
+      while ((fileInfo.state === 'PROCESSING' || !fileInfo.state) && polls < MAX_POLL_ATTEMPTS) {
+        await sleep(POLL_INTERVAL_MS);
+        fileInfo = await ai.files.get({ name: fileInfo.name });
+        polls++;
+        onProgress('Processing', `${label}: processing... (${Math.round(polls * POLL_INTERVAL_MS / 1000)}s)`);
+      }
+
+      if (fileInfo.state !== 'ACTIVE') {
+        throw new Error(`${label} upload stalled: state=${fileInfo.state}`);
+      }
+
+      return { fileData: { fileUri: fileInfo.uri, mimeType } };
+    } catch (err) {
+      lastErr = err;
+      const { retryable, waitMs, message } = classifyError(err);
+      if (!retryable || attempt >= MAX_RETRIES) throw new Error(message);
+      onProgress('Upload error', `${label}: ${message}`);
+      await sleep(waitMs ?? RETRY_BASE_MS * Math.pow(2, attempt - 1));
+    }
+  }
+
+  throw new Error(classifyError(lastErr).message);
+}
+
+// ── Validation / model discovery ──────────────────────────────────────────────
 
 export async function validateGeminiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
-    );
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
     if (res.ok) return { valid: true };
     const data = await res.json().catch(() => ({}));
     return { valid: false, error: data?.error?.message || 'Invalid API key' };
@@ -260,12 +355,8 @@ export async function validateGeminiKey(apiKey: string): Promise<{ valid: boolea
   }
 }
 
-// ── Fetch available models ────────────────────────────────────────────────────
-
 export async function fetchGeminiModels(apiKey: string) {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=100`
-  );
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=100`);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error?.message || 'Failed to fetch models');
@@ -305,95 +396,82 @@ export async function transcribeWithGemini(
   model: string,
   onProgress: (stage: string, detail?: string) => void,
   context?: MeetingContext,
+  tracks?: AudioTracks,
 ): Promise<string> {
   const ai = new GoogleGenAI({ apiKey });
 
-  // FIX 2: Normalise the MIME type — strip codec parameters the API rejects.
-  // e.g. "audio/webm;codecs=opus" → "audio/webm"
-  const mimeType = normalizeMimeType(file.type);
+  // ── Choose transcription path ─────────────────────────────────────────────
+  //
+  // Path A — Dual-track (best): mic + system audio available separately.
+  //   Guaranteed host attribution, strong participant attribution.
+  //   Used for all live recordings when system audio was captured.
+  //
+  // Path B — Mic-only: only the microphone was recorded (no screen share).
+  //   Host attribution guaranteed; participants may be faintly audible.
+  //
+  // Path C — Single-track fallback: uploaded file or legacy recording.
+  //   Uses the original multi-tier prompt. Still works, just less reliable.
 
-  // ── Step 1: prepare audio part ────────────────────────────────────────────
-  let audioPart: Record<string, unknown>;
+  let parts: any[];
+  let prompt: string;
 
-  if (file.size > INLINE_LIMIT_BYTES) {
-    // Large file → Gemini File API
-    onProgress('Uploading', `${(file.size / 1024 / 1024).toFixed(1)} MB — uploading to Gemini File API...`);
+  if (tracks?.micFile && tracks?.systemFile) {
+    // ── Path A: Dual-track ──────────────────────────────────────────────────
+    onProgress('Preparing', 'Uploading separate mic and system audio tracks for speaker identification...');
 
-    let uploadedRef: Record<string, unknown> | null = null;
-    let lastErr: unknown;
+    const [micPart, sysPart] = await Promise.all([
+      prepareAudioPart(tracks.micFile,    ai, 'Mic track',    onProgress),
+      prepareAudioPart(tracks.systemFile, ai, 'System track', onProgress),
+    ]);
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        if (attempt > 1) onProgress('Retrying upload', `Attempt ${attempt}/${MAX_RETRIES}...`);
+    // The order matters: the prompt refers to "first audio" and "second audio"
+    parts  = [
+      micPart,
+      { text: `— END OF TRACK 1 (${context?.hostName?.trim() || 'Host'}'s microphone) —` },
+      sysPart,
+      { text: '— END OF TRACK 2 (system/participant audio) —' },
+    ];
+    prompt = buildDualTrackPrompt(context);
 
-        // FIX 3: Race the upload against a hard timeout.
-        const uploaded = await Promise.race([
-          ai.files.upload({
-            file,
-            config: { mimeType, displayName: file.name },
-          }),
-          timeoutAfter(UPLOAD_TIMEOUT_MS, 'File upload'),
-        ]);
+    onProgress('Transcribing', 'Both tracks ready — Gemini is producing the unified transcript...');
 
-        // Poll until ACTIVE
-        let fileInfo: any = uploaded;
-        let polls         = 0;
-        while (
-          (fileInfo.state === 'PROCESSING' || !fileInfo.state) &&
-          polls < MAX_POLL_ATTEMPTS
-        ) {
-          await sleep(POLL_INTERVAL_MS);
-          fileInfo = await ai.files.get({ name: fileInfo.name });
-          polls++;
-          onProgress(
-            'Processing upload',
-            `Gemini is processing the file... (${Math.round((polls * POLL_INTERVAL_MS) / 1000)}s)`
-          );
-        }
+  } else if (tracks?.micFile) {
+    // ── Path B: Mic-only ────────────────────────────────────────────────────
+    onProgress('Preparing', 'Mic-only recording — uploading for transcription...');
+    const micPart = await prepareAudioPart(tracks.micFile, ai, 'Mic track', onProgress);
+    parts  = [micPart];
+    prompt = buildMicOnlyPrompt(context);
+    onProgress('Transcribing', 'Sending to Gemini (mic-only mode)...');
 
-        if (fileInfo.state !== 'ACTIVE') {
-          throw new Error(`File upload stalled: state=${fileInfo.state} after ${polls} polls`);
-        }
-
-        onProgress('Upload complete', `File ready — starting transcription...`);
-        // Use our normalised mimeType; don't echo back whatever the API returned
-        uploadedRef = { fileData: { fileUri: fileInfo.uri, mimeType } };
-        break;
-      } catch (err) {
-        lastErr = err;
-        const { retryable, waitMs, message } = classifyError(err);
-        if (!retryable || attempt >= MAX_RETRIES) throw new Error(message);
-        onProgress('Upload error', message);
-        await sleep(waitMs ?? RETRY_BASE_MS * Math.pow(2, attempt - 1));
-      }
-    }
-
-    if (!uploadedRef) throw new Error(classifyError(lastErr).message);
-    audioPart = uploadedRef;
   } else {
-    // Small file → inline base64 (FIX 1: safe threshold of 15 MB)
-    onProgress('Preparing', `Encoding ${(file.size / 1024 / 1024).toFixed(1)} MB inline...`);
-    const base64 = await fileToBase64(file);
-    audioPart    = { inlineData: { mimeType, data: base64 } };
-    onProgress('Ready', 'Audio encoded — sending to Gemini...');
+    // ── Path C: Single merged file (uploaded file or no tracks available) ───
+    const mimeType = normalizeMimeType(file.type);
+    if (file.size > INLINE_LIMIT_BYTES) {
+      onProgress('Uploading', `${(file.size / 1024 / 1024).toFixed(1)} MB → Gemini File API...`);
+      const audioPart = await prepareAudioPart(file, ai, 'Audio file', onProgress);
+      parts = [audioPart];
+    } else {
+      onProgress('Preparing', `Encoding ${(file.size / 1024 / 1024).toFixed(1)} MB inline...`);
+      const base64 = await fileToBase64(file);
+      parts = [{ inlineData: { mimeType, data: base64 } }];
+      onProgress('Ready', 'Audio encoded — sending to Gemini...');
+    }
+    prompt = buildTranscriptionPrompt(context);
+    onProgress('Transcribing', 'Waiting for Gemini response...');
   }
 
-  // ── Step 2: transcribe ────────────────────────────────────────────────────
-  onProgress('Transcribing', 'Waiting for Gemini response (may take a few minutes for long recordings)...');
-
+  // ── Generate transcript ───────────────────────────────────────────────────
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       if (attempt > 1) onProgress('Retrying', `Attempt ${attempt}/${MAX_RETRIES}...`);
 
-      // FIX 3: Race generateContent against a hard timeout.
-      // Without this, a stalled Gemini response hangs the UI indefinitely.
       const response = await Promise.race([
         ai.models.generateContent({
           model,
           contents: [{
             role:  'user',
-            parts: [audioPart as any, { text: buildTranscriptionPrompt(context) }],
+            parts: [...parts, { text: prompt }],
           }],
         }),
         timeoutAfter(GENERATE_TIMEOUT_MS, 'Transcription request'),

@@ -12,11 +12,23 @@ vi.spyOn(console, 'warn').mockImplementation(() => {});
 // ── Stub browser APIs that jsdom doesn't implement ───────────────────────────
 
 // MediaDevices (not available in jsdom)
+// Both getUserMedia and getDisplayMedia now need getAudioTracks() because
+// useAudioRecorder.ts creates separate mic/system MediaRecorder instances.
+const makeMockStream = (label = 'Mock Track') => ({
+  getTracks:       () => [],
+  getAudioTracks:  () => [{ label, stop: vi.fn(), kind: 'audio' }],
+  getVideoTracks:  () => [],
+});
+
 Object.defineProperty(global.navigator, 'mediaDevices', {
   writable: true,
   value: {
-    getUserMedia:   vi.fn().mockResolvedValue({ getTracks: () => [] }),
-    getDisplayMedia: vi.fn().mockResolvedValue({ getTracks: () => [], getAudioTracks: () => [], getVideoTracks: () => [] }),
+    getUserMedia:    vi.fn().mockResolvedValue(makeMockStream('Microphone')),
+    getDisplayMedia: vi.fn().mockResolvedValue({
+      ...makeMockStream('System Audio'),
+      // getDisplayMedia returns a stream that also has video tracks to stop
+      getVideoTracks: () => [{ stop: vi.fn(), kind: 'video' }],
+    }),
   },
 });
 

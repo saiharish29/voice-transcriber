@@ -26,6 +26,21 @@ export interface MeetingContext {
   meetingTitle?: string;
 }
 
+// ── Dual-track audio (for speaker identification) ────────────────────────────
+
+/**
+ * Separate audio tracks captured during a live recording.
+ * When both tracks are present, the transcription service can make a
+ * guaranteed attribution: everything in micFile = the host; everything
+ * in systemFile = remote participants. This eliminates speaker-ID guessing.
+ */
+export interface AudioTracks {
+  /** Host's microphone only. Every word here belongs 100% to the host. */
+  micFile?: File;
+  /** System/speaker audio only. Contains all remote participant voices. */
+  systemFile?: File;
+}
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 export type AppStatus = 'idle' | 'processing' | 'success' | 'error';

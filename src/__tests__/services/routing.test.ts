@@ -43,6 +43,7 @@ describe('transcribe() routing', () => {
       expect.any(String),   // model
       expect.any(Function), // onProgress
       undefined,            // context (not passed)
+      undefined,            // tracks  (not passed)
     );
   });
 
@@ -55,6 +56,23 @@ describe('transcribe() routing', () => {
       'gemini-2.5-flash',
       expect.any(Function),
       mockCtx,
+      undefined,            // tracks (not passed)
+    );
+  });
+
+  it('passes AudioTracks to the provider when supplied', async () => {
+    const { transcribeWithGemini } = await import('@/services/transcription/gemini');
+    const mockMicFile    = new File(['mic'],    'mic.webm',    { type: 'audio/webm' });
+    const mockSystemFile = new File(['system'], 'system.webm', { type: 'audio/webm' });
+    const tracks = { micFile: mockMicFile, systemFile: mockSystemFile };
+    await transcribe(mockFile, mockConfig, vi.fn(), mockCtx, tracks);
+    expect(transcribeWithGemini).toHaveBeenCalledWith(
+      mockFile,
+      'AIza-key',
+      'gemini-2.5-flash',
+      expect.any(Function),
+      mockCtx,
+      tracks,
     );
   });
 

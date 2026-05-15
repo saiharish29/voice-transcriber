@@ -6,7 +6,7 @@ import { TranscriptView } from '@/components/TranscriptView';
 import { SettingsPanel }  from '@/components/SettingsPanel';
 import { loadConfig }     from '@/services/config';
 import { transcribe }     from '@/services/transcription';
-import type { AppState, MeetingContext } from '@/types';
+import type { AppState, MeetingContext, AudioTracks } from '@/types';
 
 /** Trigger a browser download of a File/Blob object. */
 function downloadFile(file: File | Blob, filename: string) {
@@ -27,7 +27,7 @@ export default function App() {
   const [detail,       setDetail      ] = useState('');
   const [showSettings, setShowSettings] = useState(false);
 
-  const handleTranscribe = useCallback(async (file: File, context: MeetingContext) => {
+  const handleTranscribe = useCallback(async (file: File, context: MeetingContext, tracks?: AudioTracks) => {
     const config = loadConfig();
     if (!config) { setConfigured(false); return; }
 
@@ -41,6 +41,7 @@ export default function App() {
         config,
         (s, d) => { setStage(s); setDetail(d ?? ''); },
         context,
+        tracks,
       );
       setAppState({ status: 'success', transcript, fileName: file.name });
     } catch (err: any) {

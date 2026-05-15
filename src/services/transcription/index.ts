@@ -12,7 +12,7 @@
 import { transcribeWithGemini, validateGeminiKey,  fetchGeminiModels,  DEFAULT_GEMINI_MODEL } from './gemini';
 import { transcribeWithOpenAI, validateOpenAIKey,  fetchOpenAIModels,  DEFAULT_OPENAI_MODEL } from './openai';
 import { transcribeWithGroq,   validateGroqKey,    fetchGroqModels,    DEFAULT_GROQ_MODEL   } from './groq';
-import type { Provider, MeetingContext } from '@/types';
+import type { Provider, MeetingContext, AudioTracks } from '@/types';
 
 // ── File constraints ──────────────────────────────────────────────────────────
 
@@ -135,21 +135,29 @@ export function getDefaultModel(provider: Provider): string {
 
 /**
  * Transcribe an audio/video file using the configured provider.
- * The API key is used only for the provider call — never stored or forwarded.
+ *
+ * @param file    The primary (merged) audio file — used by all providers.
+ * @param config  Provider + API key + model selection.
+ * @param onProgress  Stage/detail callback for UI progress display.
+ * @param context Optional meeting metadata (host name, participant names, title).
+ * @param tracks  Optional separate mic/system audio tracks (live recordings only).
+ *                When present, Gemini uses them for guaranteed speaker attribution.
+ *                Groq/OpenAI use them to produce a host-labelled transcript.
  */
 export async function transcribe(
   file: File,
   config: TranscriptionConfig,
   onProgress: (stage: string, detail?: string) => void,
   context?: MeetingContext,
+  tracks?: AudioTracks,
 ): Promise<string> {
   switch (config.provider) {
     case 'gemini':
-      return transcribeWithGemini(file, config.apiKey, config.model, onProgress, context);
+      return transcribeWithGemini(file, config.apiKey, config.model, onProgress, context, tracks);
     case 'openai':
-      return transcribeWithOpenAI(file, config.apiKey, config.model, onProgress, context);
+      return transcribeWithOpenAI(file, config.apiKey, config.model, onProgress, context, tracks);
     case 'groq':
-      return transcribeWithGroq(file, config.apiKey, config.model, onProgress, context);
+      return transcribeWithGroq(file, config.apiKey, config.model, onProgress, context, tracks);
     default: {
       const _: never = config.provider;
       throw new Error(`Unknown transcription provider: ${_}`);
@@ -157,4 +165,4 @@ export async function transcribe(
   }
 }
 
-export type { MeetingContext };
+export type { MeetingContext, AudioTracks };
